@@ -19,6 +19,7 @@ import com.amazonaws.services.glue.AWSGlueAsync;
 import com.google.common.collect.ImmutableSet;
 import com.google.inject.Inject;
 import com.google.inject.Provider;
+import io.trino.plugin.hive.metastore.glue.GlueMetastoreStats;
 
 import java.util.Set;
 

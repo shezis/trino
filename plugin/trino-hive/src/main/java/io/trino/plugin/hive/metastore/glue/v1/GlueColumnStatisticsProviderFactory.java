@@ -14,6 +14,7 @@
 package io.trino.plugin.hive.metastore.glue.v1;
 
 import com.amazonaws.services.glue.AWSGlueAsync;
+import io.trino.plugin.hive.metastore.glue.GlueMetastoreStats;
 
 public interface GlueColumnStatisticsProviderFactory
 {

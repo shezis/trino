@@ -14,8 +14,8 @@
 package io.trino.plugin.iceberg.catalog.glue;
 
 import com.google.common.math.DoubleMath;
-import io.trino.plugin.hive.metastore.glue.v1.AwsApiCallStats;
-import io.trino.plugin.hive.metastore.glue.v1.GlueMetastoreStats;
+import io.trino.plugin.hive.metastore.glue.AwsApiCallStats;
+import io.trino.plugin.hive.metastore.glue.GlueMetastoreStats;
 
 import java.math.RoundingMode;
 import java.util.function.Function;

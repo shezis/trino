@@ -11,9 +11,10 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package io.trino.plugin.hive.metastore.glue.v1;
+package io.trino.plugin.hive.metastore.glue;
 
 import com.amazonaws.metrics.RequestMetricCollector;
+import io.trino.plugin.hive.metastore.glue.v1.AwsSdkClientCoreStats;
 import org.weakref.jmx.Flatten;
 import org.weakref.jmx.Managed;
 import org.weakref.jmx.Nested;

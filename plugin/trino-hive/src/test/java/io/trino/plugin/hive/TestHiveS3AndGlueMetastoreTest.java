@@ -30,7 +30,7 @@ import java.util.regex.Pattern;
 import static io.trino.plugin.hive.BaseS3AndGlueMetastoreTest.LocationPattern.DOUBLE_SLASH;
 import static io.trino.plugin.hive.BaseS3AndGlueMetastoreTest.LocationPattern.TRIPLE_SLASH;
 import static io.trino.plugin.hive.BaseS3AndGlueMetastoreTest.LocationPattern.TWO_TRAILING_SLASHES;
-import static io.trino.plugin.hive.metastore.glue.v1.TestingGlueHiveMetastore.createTestingGlueHiveMetastore;
+import static io.trino.plugin.hive.metastore.glue.TestingGlueHiveMetastore.createTestingGlueHiveMetastore;
 import static io.trino.spi.security.SelectedRole.Type.ROLE;
 import static io.trino.testing.MaterializedResult.resultBuilder;
 import static io.trino.testing.TestingNames.randomNameSuffix;
@@ -263,7 +263,7 @@ public class TestHiveS3AndGlueMetastoreTest
             if (partitioned) {
                 assertQuery("SHOW STATS FOR " + tableName, """
                         VALUES
-                        ('col_str', 0.0, 1.0, 0.0, null, null, null),
+                        ('col_str', 16.0, 1.0, 0.0, null, null, null),
                         ('col_int', null, 4.0, 0.0, null, 1, 4),
                         (null, null, null, null, 4.0, null, null)""");
             }

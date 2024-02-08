@@ -20,7 +20,7 @@ import com.google.common.collect.Multiset;
 import io.airlift.log.Logger;
 import io.opentelemetry.sdk.trace.data.SpanData;
 import io.trino.Session;
-import io.trino.plugin.hive.metastore.glue.v1.GlueMetastoreStats;
+import io.trino.plugin.hive.metastore.glue.GlueMetastoreStats;
 import io.trino.plugin.iceberg.IcebergConnector;
 import io.trino.plugin.iceberg.TableType;
 import io.trino.plugin.iceberg.TestingIcebergPlugin;

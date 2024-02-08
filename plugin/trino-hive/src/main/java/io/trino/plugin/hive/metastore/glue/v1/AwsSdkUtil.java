@@ -14,6 +14,7 @@
 package io.trino.plugin.hive.metastore.glue.v1;
 
 import com.google.common.collect.AbstractIterator;
+import io.trino.plugin.hive.metastore.glue.AwsApiCallStats;
 
 import java.util.Iterator;
 import java.util.function.BiConsumer;
