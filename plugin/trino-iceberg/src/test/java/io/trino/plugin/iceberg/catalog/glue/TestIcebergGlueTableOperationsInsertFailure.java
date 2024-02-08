@@ -19,7 +19,7 @@ import io.airlift.log.Logger;
 import io.trino.Session;
 import io.trino.execution.Failure;
 import io.trino.plugin.hive.metastore.Database;
-import io.trino.plugin.hive.metastore.glue.GlueHiveMetastore;
+import io.trino.plugin.hive.metastore.glue.v1.GlueHiveMetastore;
 import io.trino.plugin.iceberg.TestingIcebergPlugin;
 import io.trino.spi.security.PrincipalType;
 import io.trino.testing.AbstractTestQueryFramework;
@@ -36,7 +36,7 @@ import java.nio.file.Path;
 import java.util.Optional;
 
 import static com.google.common.reflect.Reflection.newProxy;
-import static io.trino.plugin.hive.metastore.glue.TestingGlueHiveMetastore.createTestingGlueHiveMetastore;
+import static io.trino.plugin.hive.metastore.glue.v1.TestingGlueHiveMetastore.createTestingGlueHiveMetastore;
 import static io.trino.testing.TestingNames.randomNameSuffix;
 import static io.trino.testing.TestingSession.testSessionBuilder;
 import static java.lang.String.format;

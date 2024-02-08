@@ -18,7 +18,7 @@ import io.trino.plugin.hive.metastore.HiveMetastore;
 
 import java.nio.file.Path;
 
-import static io.trino.plugin.hive.metastore.glue.TestingGlueHiveMetastore.createTestingGlueHiveMetastore;
+import static io.trino.plugin.hive.metastore.glue.v1.TestingGlueHiveMetastore.createTestingGlueHiveMetastore;
 
 public class TestDeltaLakeRegisterTableProcedureWithGlue
         extends BaseDeltaLakeRegisterTableProcedureTest

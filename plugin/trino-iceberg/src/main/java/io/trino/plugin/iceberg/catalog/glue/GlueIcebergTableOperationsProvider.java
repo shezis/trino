@@ -16,7 +16,7 @@ package io.trino.plugin.iceberg.catalog.glue;
 import com.amazonaws.services.glue.AWSGlueAsync;
 import com.google.inject.Inject;
 import io.trino.filesystem.TrinoFileSystemFactory;
-import io.trino.plugin.hive.metastore.glue.GlueMetastoreStats;
+import io.trino.plugin.hive.metastore.glue.v1.GlueMetastoreStats;
 import io.trino.plugin.iceberg.catalog.IcebergTableOperations;
 import io.trino.plugin.iceberg.catalog.IcebergTableOperationsProvider;
 import io.trino.plugin.iceberg.catalog.TrinoCatalog;
