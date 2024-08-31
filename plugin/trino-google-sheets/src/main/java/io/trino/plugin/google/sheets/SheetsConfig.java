@@ -163,7 +163,7 @@ public class SheetsConfig
 
     @Config("gsheets.batch-clear")
     @ConfigDescription("Clear Sheet before Inserting new data")
-    public SheetsConfig batchClear(boolean batchClear)
+    public SheetsConfig setBatchClear(boolean batchClear)
     {
         this.batchClear = batchClear;
         return this;
