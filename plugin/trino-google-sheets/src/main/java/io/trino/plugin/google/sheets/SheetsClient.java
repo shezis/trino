@@ -20,6 +20,7 @@ import com.google.api.client.json.JsonFactory;
 import com.google.api.client.json.jackson2.JacksonFactory;
 import com.google.api.services.sheets.v4.Sheets;
 import com.google.api.services.sheets.v4.SheetsScopes;
+import com.google.api.services.sheets.v4.model.BatchClearValuesRequest;
 import com.google.api.services.sheets.v4.model.ValueRange;
 import com.google.common.cache.CacheBuilder;
 import com.google.common.cache.CacheLoader;
@@ -41,13 +42,7 @@ import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.security.GeneralSecurityException;
-import java.util.Base64;
-import java.util.HashSet;
-import java.util.List;
-import java.util.Locale;
-import java.util.Map;
-import java.util.Optional;
-import java.util.Set;
+import java.util.*;
 
 import static com.google.api.client.googleapis.javanet.GoogleNetHttpTransport.newTrustedTransport;
 import static com.google.common.base.Throwables.throwIfInstanceOf;
@@ -81,6 +76,7 @@ public class SheetsClient
     private final LoadingCache<String, List<List<Object>>> sheetDataCache;
 
     private final Optional<String> metadataSheetId;
+    private final Boolean batchClear;
 
     private final Sheets sheetsService;
 
@@ -90,6 +86,7 @@ public class SheetsClient
         requireNonNull(catalogCodec, "catalogCodec is null");
 
         this.metadataSheetId = config.getMetadataSheetId();
+        this.batchClear = config.getBatchClear();
 
         try {
             this.sheetsService = new Sheets.Builder(newTrustedTransport(), JSON_FACTORY, setTimeout(getCredentials(config), config)).setApplicationName(APPLICATION_NAME).build();
@@ -212,7 +209,12 @@ public class SheetsClient
     {
         ValueRange body = new ValueRange().setValues(rows);
         SheetsSheetIdAndRange sheetIdAndRange = new SheetsSheetIdAndRange(sheetExpression);
+
         try {
+            if(batchClear) {
+                BatchClearValuesRequest batchClearValuesRequest = new BatchClearValuesRequest().setRanges(Collections.singletonList(sheetIdAndRange.getRange()));
+                sheetsService.spreadsheets().values().batchClear(sheetIdAndRange.getSheetId(), batchClearValuesRequest).execute();
+            }
             sheetsService.spreadsheets().values().append(sheetIdAndRange.getSheetId(), sheetIdAndRange.getRange(), body)
                     .setValueInputOption(INSERT_VALUE_OPTION)
                     .setInsertDataOption(INSERT_DATA_OPTION)
