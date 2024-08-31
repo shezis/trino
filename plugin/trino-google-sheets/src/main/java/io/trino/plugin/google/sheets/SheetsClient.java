@@ -42,7 +42,13 @@ import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.security.GeneralSecurityException;
-import java.util.*;
+import java.util.Base64;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Optional;
+import java.util.Set;
 
 import static com.google.api.client.googleapis.javanet.GoogleNetHttpTransport.newTrustedTransport;
 import static com.google.common.base.Throwables.throwIfInstanceOf;
@@ -54,6 +60,7 @@ import static io.trino.plugin.google.sheets.SheetsErrorCode.SHEETS_METASTORE_ERR
 import static io.trino.plugin.google.sheets.SheetsErrorCode.SHEETS_TABLE_LOAD_ERROR;
 import static io.trino.plugin.google.sheets.SheetsErrorCode.SHEETS_UNKNOWN_TABLE_ERROR;
 import static java.lang.Math.toIntExact;
+import static java.util.Collections.singletonList;
 import static java.util.Locale.ENGLISH;
 import static java.util.Objects.requireNonNull;
 import static java.util.concurrent.TimeUnit.MILLISECONDS;
@@ -211,8 +218,8 @@ public class SheetsClient
         SheetsSheetIdAndRange sheetIdAndRange = new SheetsSheetIdAndRange(sheetExpression);
 
         try {
-            if(batchClear) {
-                BatchClearValuesRequest batchClearValuesRequest = new BatchClearValuesRequest().setRanges(Collections.singletonList(sheetIdAndRange.getRange()));
+            if (batchClear) {
+                BatchClearValuesRequest batchClearValuesRequest = new BatchClearValuesRequest().setRanges(singletonList(sheetIdAndRange.getRange()));
                 sheetsService.spreadsheets().values().batchClear(sheetIdAndRange.getSheetId(), batchClearValuesRequest).execute();
             }
             sheetsService.spreadsheets().values().append(sheetIdAndRange.getSheetId(), sheetIdAndRange.getRange(), body)

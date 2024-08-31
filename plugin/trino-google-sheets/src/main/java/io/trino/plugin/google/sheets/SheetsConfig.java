@@ -38,9 +38,7 @@ public class SheetsConfig
     private Duration connectionTimeout = new Duration(20, TimeUnit.SECONDS);
     private Duration readTimeout = new Duration(20, TimeUnit.SECONDS);
     private Duration writeTimeout = new Duration(20, TimeUnit.SECONDS);
-
     private Boolean batchClear = false;
-
 
     @AssertTrue(message = "Exactly one of 'gsheets.credentials-key' or 'gsheets.credentials-path' must be specified")
     public boolean isCredentialsConfigurationValid()
