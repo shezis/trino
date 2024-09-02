@@ -15,6 +15,8 @@ package io.trino.sql.planner.iterative.rule;
 
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
+import io.trino.sql.ir.Comparison;
+import io.trino.sql.ir.Reference;
 import io.trino.sql.planner.iterative.rule.test.BaseRuleTest;
 import io.trino.sql.planner.iterative.rule.test.PlanBuilder;
 import io.trino.sql.planner.plan.JoinType;
@@ -23,6 +25,9 @@ import org.junit.jupiter.api.Test;
 import java.util.Optional;
 
 import static io.trino.spi.type.BigintType.BIGINT;
+import static io.trino.sql.ir.Booleans.TRUE;
+import static io.trino.sql.ir.Comparison.Operator.EQUAL;
+import static io.trino.sql.ir.Comparison.Operator.GREATER_THAN;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.aggregation;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.aggregationFunction;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.assignUniqueId;
@@ -58,7 +63,7 @@ public class TestTransformCorrelatedGroupedAggregationWithoutProjection
                         p.values(p.symbol("corr")),
                         p.aggregation(ab -> ab
                                 .source(p.values(p.symbol("a"), p.symbol("b")))
-                                .addAggregation(p.symbol("sum"), PlanBuilder.expression("sum(a)"), ImmutableList.of(BIGINT))
+                                .addAggregation(p.symbol("sum"), PlanBuilder.aggregation("sum", ImmutableList.of(new Reference(BIGINT, "a"))), ImmutableList.of(BIGINT))
                                 .globalGrouping())))
                 .doesNotFire();
     }
@@ -71,30 +76,30 @@ public class TestTransformCorrelatedGroupedAggregationWithoutProjection
                         ImmutableList.of(p.symbol("corr")),
                         p.values(p.symbol("corr")),
                         INNER,
-                        PlanBuilder.expression("true"),
+                        TRUE,
                         p.aggregation(outerBuilder -> outerBuilder
                                 .singleGroupingSet(p.symbol("a"))
-                                .addAggregation(p.symbol("sum"), PlanBuilder.expression("sum(a)"), ImmutableList.of(BIGINT))
-                                .addAggregation(p.symbol("count"), PlanBuilder.expression("count()"), ImmutableList.of())
+                                .addAggregation(p.symbol("sum"), PlanBuilder.aggregation("sum", ImmutableList.of(new Reference(BIGINT, "a"))), ImmutableList.of(BIGINT))
+                                .addAggregation(p.symbol("count"), PlanBuilder.aggregation("count", ImmutableList.of()), ImmutableList.of())
                                 .source(p.filter(
-                                        PlanBuilder.expression("b > corr"),
+                                        new Comparison(GREATER_THAN, new Reference(BIGINT, "b"), new Reference(BIGINT, "corr")),
                                         p.values(p.symbol("a"), p.symbol("b")))))))
                 .matches(
-                        project(ImmutableMap.of("corr", expression("corr"), "sum_agg", expression("sum_agg"), "count_agg", expression("count_agg")),
+                        project(ImmutableMap.of("corr", expression(new Reference(BIGINT, "corr")), "sum_agg", io.trino.sql.planner.assertions.PlanMatchPattern.expression(new Reference(BIGINT, "sum_agg")), "count_agg", io.trino.sql.planner.assertions.PlanMatchPattern.expression(new Reference(BIGINT, "count_agg"))),
                                 aggregation(
                                         singleGroupingSet("corr", "unique", "a"),
                                         ImmutableMap.of(Optional.of("sum_agg"), aggregationFunction("sum", ImmutableList.of("a")), Optional.of("count_agg"), aggregationFunction("count", ImmutableList.of())),
                                         Optional.empty(),
                                         SINGLE,
                                         join(JoinType.INNER, builder -> builder
-                                                .filter("b > corr")
+                                                .filter(new Comparison(GREATER_THAN, new Reference(BIGINT, "b"), new Reference(BIGINT, "corr")))
                                                 .left(
                                                         assignUniqueId(
                                                                 "unique",
                                                                 values("corr")))
                                                 .right(
                                                         filter(
-                                                                "true",
+                                                                TRUE,
                                                                 values("a", "b")))))));
     }
 
@@ -106,18 +111,18 @@ public class TestTransformCorrelatedGroupedAggregationWithoutProjection
                         ImmutableList.of(p.symbol("corr")),
                         p.values(p.symbol("corr")),
                         INNER,
-                        PlanBuilder.expression("true"),
+                        TRUE,
                         p.aggregation(outerBuilder -> outerBuilder
                                 .singleGroupingSet(p.symbol("a"))
-                                .addAggregation(p.symbol("sum"), PlanBuilder.expression("sum(a)"), ImmutableList.of(BIGINT))
-                                .addAggregation(p.symbol("count"), PlanBuilder.expression("count()"), ImmutableList.of())
+                                .addAggregation(p.symbol("sum"), PlanBuilder.aggregation("sum", ImmutableList.of(new Reference(BIGINT, "a"))), ImmutableList.of(BIGINT))
+                                .addAggregation(p.symbol("count"), PlanBuilder.aggregation("count", ImmutableList.of()), ImmutableList.of())
                                 .source(p.aggregation(innerBuilder -> innerBuilder
                                         .singleGroupingSet(p.symbol("a"))
                                         .source(p.filter(
-                                                PlanBuilder.expression("b > corr"),
+                                                new Comparison(GREATER_THAN, new Reference(BIGINT, "b"), new Reference(BIGINT, "corr")),
                                                 p.values(p.symbol("a"), p.symbol("b")))))))))
                 .matches(
-                        project(ImmutableMap.of("corr", expression("corr"), "sum_agg", expression("sum_agg"), "count_agg", expression("count_agg")),
+                        project(ImmutableMap.of("corr", expression(new Reference(BIGINT, "corr")), "sum_agg", io.trino.sql.planner.assertions.PlanMatchPattern.expression(new Reference(BIGINT, "sum_agg")), "count_agg", io.trino.sql.planner.assertions.PlanMatchPattern.expression(new Reference(BIGINT, "count_agg"))),
                                 aggregation(
                                         singleGroupingSet("corr", "unique", "a"),
                                         ImmutableMap.of(Optional.of("sum_agg"), aggregationFunction("sum", ImmutableList.of("a")), Optional.of("count_agg"), aggregationFunction("count", ImmutableList.of())),
@@ -129,14 +134,14 @@ public class TestTransformCorrelatedGroupedAggregationWithoutProjection
                                                 Optional.empty(),
                                                 SINGLE,
                                                 join(JoinType.INNER, builder -> builder
-                                                        .filter("b > corr")
+                                                        .filter(new Comparison(GREATER_THAN, new Reference(BIGINT, "b"), new Reference(BIGINT, "corr")))
                                                         .left(
                                                                 assignUniqueId(
                                                                         "unique",
                                                                         values("corr")))
                                                         .right(
                                                                 filter(
-                                                                        "true",
+                                                                        TRUE,
                                                                         values("a", "b"))))))));
     }
 
@@ -150,25 +155,25 @@ public class TestTransformCorrelatedGroupedAggregationWithoutProjection
                         ImmutableList.of(p.symbol("corr")),
                         p.values(p.symbol("corr")),
                         INNER,
-                        PlanBuilder.expression("true"),
+                        TRUE,
                         p.aggregation(outerBuilder -> outerBuilder
                                 .singleGroupingSet(p.symbol("a"))
-                                .addAggregation(p.symbol("sum"), PlanBuilder.expression("sum(a)"), ImmutableList.of(BIGINT))
-                                .addAggregation(p.symbol("count"), PlanBuilder.expression("count()"), ImmutableList.of())
+                                .addAggregation(p.symbol("sum"), PlanBuilder.aggregation("sum", ImmutableList.of(new Reference(BIGINT, "a"))), ImmutableList.of(BIGINT))
+                                .addAggregation(p.symbol("count"), PlanBuilder.aggregation("count", ImmutableList.of()), ImmutableList.of())
                                 .source(p.aggregation(innerBuilder -> innerBuilder
                                         .singleGroupingSet(p.symbol("a"))
                                         .source(p.filter(
-                                                PlanBuilder.expression("b = corr"),
+                                                new Comparison(EQUAL, new Reference(BIGINT, "b"), new Reference(BIGINT, "corr")),
                                                 p.values(p.symbol("a"), p.symbol("b")))))))))
                 .matches(
-                        project(ImmutableMap.of("corr", expression("corr"), "sum_agg", expression("sum_agg"), "count_agg", expression("count_agg")),
+                        project(ImmutableMap.of("corr", expression(new Reference(BIGINT, "corr")), "sum_agg", io.trino.sql.planner.assertions.PlanMatchPattern.expression(new Reference(BIGINT, "sum_agg")), "count_agg", io.trino.sql.planner.assertions.PlanMatchPattern.expression(new Reference(BIGINT, "count_agg"))),
                                 aggregation(
                                         singleGroupingSet("corr", "unique", "a"),
                                         ImmutableMap.of(Optional.of("sum_agg"), aggregationFunction("sum", ImmutableList.of("a")), Optional.of("count_agg"), aggregationFunction("count", ImmutableList.of())),
                                         Optional.empty(),
                                         SINGLE,
                                         join(JoinType.INNER, builder -> builder
-                                                .filter("b = corr")
+                                                .filter(new Comparison(EQUAL, new Reference(BIGINT, "b"), new Reference(BIGINT, "corr")))
                                                 .left(
                                                         assignUniqueId(
                                                                 "unique",
@@ -180,7 +185,7 @@ public class TestTransformCorrelatedGroupedAggregationWithoutProjection
                                                                 Optional.empty(),
                                                                 SINGLE,
                                                                 filter(
-                                                                        "true",
+                                                                        TRUE,
                                                                         values("a", "b"))))))));
     }
 }

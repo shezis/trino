@@ -21,10 +21,11 @@ import io.trino.spi.predicate.Range;
 import io.trino.spi.predicate.TupleDomain;
 import io.trino.spi.predicate.ValueSet;
 import io.trino.sql.PlannerContext;
+import io.trino.sql.ir.Booleans;
+import io.trino.sql.ir.Expression;
 import io.trino.sql.planner.DomainTranslator;
 import io.trino.sql.planner.PlanNodeIdAllocator;
 import io.trino.sql.planner.Symbol;
-import io.trino.sql.planner.TypeProvider;
 import io.trino.sql.planner.plan.FilterNode;
 import io.trino.sql.planner.plan.LimitNode;
 import io.trino.sql.planner.plan.PlanNode;
@@ -34,8 +35,6 @@ import io.trino.sql.planner.plan.TopNRankingNode;
 import io.trino.sql.planner.plan.TopNRankingNode.RankingType;
 import io.trino.sql.planner.plan.ValuesNode;
 import io.trino.sql.planner.plan.WindowNode;
-import io.trino.sql.tree.BooleanLiteral;
-import io.trino.sql.tree.Expression;
 
 import java.util.Optional;
 import java.util.OptionalInt;
@@ -67,7 +66,7 @@ public class WindowFilterPushDown
     public PlanNode optimize(PlanNode plan, Context context)
     {
         requireNonNull(plan, "plan is null");
-        return SimplePlanRewriter.rewriteWith(new Rewriter(context.idAllocator(), plannerContext, context.session(), context.types()), plan, null);
+        return SimplePlanRewriter.rewriteWith(new Rewriter(context.idAllocator(), plannerContext, context.session()), plan, null);
     }
 
     private static class Rewriter
@@ -76,7 +75,6 @@ public class WindowFilterPushDown
         private final PlanNodeIdAllocator idAllocator;
         private final PlannerContext plannerContext;
         private final Session session;
-        private final TypeProvider types;
         private final FunctionId rowNumberFunctionId;
         private final FunctionId rankFunctionId;
         private final DomainTranslator domainTranslator;
@@ -84,16 +82,14 @@ public class WindowFilterPushDown
         private Rewriter(
                 PlanNodeIdAllocator idAllocator,
                 PlannerContext plannerContext,
-                Session session,
-                TypeProvider types)
+                Session session)
         {
             this.idAllocator = requireNonNull(idAllocator, "idAllocator is null");
             this.plannerContext = requireNonNull(plannerContext, "plannerContext is null");
             this.session = requireNonNull(session, "session is null");
-            this.types = requireNonNull(types, "types is null");
-            rowNumberFunctionId = plannerContext.getMetadata().resolveBuiltinFunction("row_number", ImmutableList.of()).getFunctionId();
-            rankFunctionId = plannerContext.getMetadata().resolveBuiltinFunction("rank", ImmutableList.of()).getFunctionId();
-            domainTranslator = new DomainTranslator(plannerContext);
+            rowNumberFunctionId = plannerContext.getMetadata().resolveBuiltinFunction("row_number", ImmutableList.of()).functionId();
+            rankFunctionId = plannerContext.getMetadata().resolveBuiltinFunction("rank", ImmutableList.of()).functionId();
+            this.domainTranslator = new DomainTranslator(plannerContext.getMetadata());
         }
 
         @Override
@@ -157,7 +153,7 @@ public class WindowFilterPushDown
         {
             PlanNode source = context.rewrite(node.getSource());
 
-            TupleDomain<Symbol> tupleDomain = DomainTranslator.getExtractionResult(plannerContext, session, node.getPredicate(), types).getTupleDomain();
+            TupleDomain<Symbol> tupleDomain = DomainTranslator.getExtractionResult(plannerContext, session, node.getPredicate()).getTupleDomain();
 
             if (source instanceof RowNumberNode) {
                 Symbol rowNumberSymbol = ((RowNumberNode) source).getRowNumberSymbol();
@@ -191,7 +187,7 @@ public class WindowFilterPushDown
 
         private PlanNode rewriteFilterSource(FilterNode filterNode, PlanNode source, Symbol rankingSymbol, int upperBound)
         {
-            ExtractionResult extractionResult = DomainTranslator.getExtractionResult(plannerContext, session, filterNode.getPredicate(), types);
+            ExtractionResult extractionResult = DomainTranslator.getExtractionResult(plannerContext, session, filterNode.getPredicate());
             TupleDomain<Symbol> tupleDomain = extractionResult.getTupleDomain();
 
             if (!allRankingValuesInDomain(tupleDomain, rankingSymbol, upperBound)) {
@@ -201,11 +197,10 @@ public class WindowFilterPushDown
             // Remove the ranking domain because it is absorbed into the node
             TupleDomain<Symbol> newTupleDomain = tupleDomain.filter((symbol, domain) -> !symbol.equals(rankingSymbol));
             Expression newPredicate = combineConjuncts(
-                    plannerContext.getMetadata(),
                     extractionResult.getRemainingExpression(),
                     domainTranslator.toPredicate(newTupleDomain));
 
-            if (newPredicate.equals(BooleanLiteral.TRUE_LITERAL)) {
+            if (newPredicate.equals(Booleans.TRUE)) {
                 return source;
             }
             return new FilterNode(filterNode.getId(), source, newPredicate);
@@ -289,7 +284,7 @@ public class WindowFilterPushDown
                 return false;
             }
             Symbol rankingSymbol = getOnlyElement(node.getWindowFunctions().entrySet()).getKey();
-            FunctionId functionId = node.getWindowFunctions().get(rankingSymbol).getResolvedFunction().getFunctionId();
+            FunctionId functionId = node.getWindowFunctions().get(rankingSymbol).getResolvedFunction().functionId();
             return functionId.equals(rowNumberFunctionId) && node.getOrderingScheme().isEmpty();
         }
 
@@ -299,7 +294,7 @@ public class WindowFilterPushDown
                 return Optional.empty();
             }
             Symbol rankingSymbol = getOnlyElement(node.getWindowFunctions().entrySet()).getKey();
-            FunctionId functionId = node.getWindowFunctions().get(rankingSymbol).getResolvedFunction().getFunctionId();
+            FunctionId functionId = node.getWindowFunctions().get(rankingSymbol).getResolvedFunction().functionId();
             if (functionId.equals(rowNumberFunctionId)) {
                 return Optional.of(ROW_NUMBER);
             }

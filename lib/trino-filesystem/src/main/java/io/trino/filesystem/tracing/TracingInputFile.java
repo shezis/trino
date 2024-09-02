@@ -33,7 +33,8 @@ final class TracingInputFile
 {
     private final Tracer tracer;
     private final TrinoInputFile delegate;
-    private final Optional<Long> length;
+    private Optional<Long> length;
+    private boolean lastModifiedRequested;
 
     public TracingInputFile(Tracer tracer, TrinoInputFile delegate, Optional<Long> length)
     {
@@ -76,17 +77,26 @@ final class TracingInputFile
         Span span = tracer.spanBuilder("InputFile.length")
                 .setAttribute(FileSystemAttributes.FILE_LOCATION, toString())
                 .startSpan();
-        return withTracing(span, delegate::length);
+        long fileLength = withTracing(span, delegate::length);
+        length = Optional.of(fileLength);
+        return fileLength;
     }
 
     @Override
     public Instant lastModified()
             throws IOException
     {
+        // skip tracing if lastModified is cached, but delegate anyway
+        if (lastModifiedRequested) {
+            return delegate.lastModified();
+        }
+
         Span span = tracer.spanBuilder("InputFile.lastModified")
                 .setAttribute(FileSystemAttributes.FILE_LOCATION, toString())
                 .startSpan();
-        return withTracing(span, delegate::lastModified);
+        Instant fileLastModified = withTracing(span, delegate::lastModified);
+        lastModifiedRequested = true;
+        return fileLastModified;
     }
 
     @Override

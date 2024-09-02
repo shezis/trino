@@ -20,10 +20,13 @@ import io.airlift.json.JsonCodecFactory;
 import io.airlift.slice.Slice;
 import io.airlift.slice.Slices;
 import io.trino.filesystem.hdfs.HdfsFileSystemFactory;
+import io.trino.operator.FlatHashStrategyCompiler;
 import io.trino.operator.GroupByHashPageIndexerFactory;
 import io.trino.plugin.deltalake.transactionlog.ProtocolEntry;
+import io.trino.plugin.hive.FileFormatDataSourceStats;
 import io.trino.plugin.hive.HiveTransactionHandle;
 import io.trino.plugin.hive.NodeVersion;
+import io.trino.plugin.hive.parquet.ParquetReaderConfig;
 import io.trino.spi.Page;
 import io.trino.spi.PageBuilder;
 import io.trino.spi.block.BlockBuilder;
@@ -31,7 +34,6 @@ import io.trino.spi.connector.ConnectorPageSink;
 import io.trino.spi.type.TestingTypeManager;
 import io.trino.spi.type.Type;
 import io.trino.spi.type.TypeOperators;
-import io.trino.sql.gen.JoinCompiler;
 import io.trino.tpch.LineItem;
 import io.trino.tpch.LineItemColumn;
 import io.trino.tpch.LineItemGenerator;
@@ -45,6 +47,7 @@ import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 import java.util.OptionalInt;
+import java.util.OptionalLong;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -127,14 +130,14 @@ public class TestDeltaLakePageSink
 
             assertThat(round(stats.getInputPageSizeInBytes().getAllTime().getMax())).isEqualTo(page.getRetainedSizeInBytes());
 
-            assertThat(dataFileInfo.getStatistics().getNumRecords()).isEqualTo(Optional.of(rows));
-            assertThat(dataFileInfo.getPartitionValues()).isEqualTo(ImmutableList.of());
-            assertThat(dataFileInfo.getSize()).isEqualTo(outputFile.length());
-            assertThat(dataFileInfo.getPath()).isEqualTo(outputFile.getName());
+            assertThat(dataFileInfo.statistics().getNumRecords()).isEqualTo(Optional.of(rows));
+            assertThat(dataFileInfo.partitionValues()).isEqualTo(ImmutableList.of());
+            assertThat(dataFileInfo.size()).isEqualTo(outputFile.length());
+            assertThat(dataFileInfo.path()).isEqualTo(outputFile.getName());
 
             Instant now = Instant.now();
-            assertThat(dataFileInfo.getCreationTime() < now.toEpochMilli()).isTrue();
-            assertThat(dataFileInfo.getCreationTime() > now.minus(1, MINUTES).toEpochMilli()).isTrue();
+            assertThat(dataFileInfo.creationTime() < now.toEpochMilli()).isTrue();
+            assertThat(dataFileInfo.creationTime() > now.minus(1, MINUTES).toEpochMilli()).isTrue();
         }
         finally {
             deleteRecursively(tempDir.toPath(), ALLOW_INSECURE);
@@ -159,7 +162,7 @@ public class TestDeltaLakePageSink
         DeltaLakeConfig deltaLakeConfig = new DeltaLakeConfig();
         DeltaLakeTable.Builder deltaTable = DeltaLakeTable.builder();
         for (DeltaLakeColumnHandle column : getColumnHandles()) {
-            deltaTable.addColumn(column.getColumnName(), serializeColumnType(NONE, new AtomicInteger(), column.getType()), true, null, ImmutableMap.of());
+            deltaTable.addColumn(column.columnName(), serializeColumnType(NONE, new AtomicInteger(), column.type()), true, null, ImmutableMap.of());
         }
         String schemaString = serializeSchemaAsJson(deltaTable.build());
         DeltaLakeOutputTableHandle tableHandle = new DeltaLakeOutputTableHandle(
@@ -171,18 +174,23 @@ public class TestDeltaLakePageSink
                 true,
                 Optional.empty(),
                 Optional.of(false),
+                false,
                 schemaString,
                 NONE,
                 OptionalInt.empty(),
+                false,
+                OptionalLong.empty(),
                 new ProtocolEntry(DEFAULT_READER_VERSION, DEFAULT_WRITER_VERSION, Optional.empty(), Optional.empty()));
 
         DeltaLakePageSinkProvider provider = new DeltaLakePageSinkProvider(
-                new GroupByHashPageIndexerFactory(new JoinCompiler(new TypeOperators())),
+                new GroupByHashPageIndexerFactory(new FlatHashStrategyCompiler(new TypeOperators())),
                 new HdfsFileSystemFactory(HDFS_ENVIRONMENT, HDFS_FILE_SYSTEM_STATS),
                 JsonCodec.jsonCodec(DataFileInfo.class),
                 JsonCodec.jsonCodec(DeltaLakeMergeResult.class),
                 stats,
+                new FileFormatDataSourceStats(),
                 deltaLakeConfig,
+                new ParquetReaderConfig(),
                 new TestingTypeManager(),
                 new NodeVersion("test-version"));
 

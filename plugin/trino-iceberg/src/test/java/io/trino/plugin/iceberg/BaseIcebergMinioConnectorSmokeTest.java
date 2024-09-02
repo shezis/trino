@@ -16,8 +16,8 @@ package io.trino.plugin.iceberg;
 import com.google.common.collect.ImmutableMap;
 import io.minio.messages.Event;
 import io.trino.Session;
+import io.trino.metastore.HiveMetastore;
 import io.trino.plugin.hive.containers.HiveMinioDataLake;
-import io.trino.plugin.hive.metastore.HiveMetastore;
 import io.trino.plugin.hive.metastore.thrift.BridgingHiveMetastore;
 import io.trino.testing.QueryRunner;
 import io.trino.testing.minio.MinioClient;
@@ -125,11 +125,10 @@ public abstract class BaseIcebergMinioConnectorSmokeTest
         assertThat(location).doesNotContain("#");
 
         assertUpdate("CREATE TABLE " + tableName + " WITH (location='" + location + "') AS SELECT 1 col", 1);
-
-        List<String> dataFiles = hiveMinioDataLake.getMinioClient().listObjects(bucketName, "/%s/%s/data".formatted(schemaName, tableName));
+        List<String> dataFiles = hiveMinioDataLake.getMinioClient().listObjects(bucketName, "%s/%s/data".formatted(schemaName, tableName));
         assertThat(dataFiles).isNotEmpty().filteredOn(filePath -> filePath.contains("#")).isEmpty();
 
-        List<String> metadataFiles = hiveMinioDataLake.getMinioClient().listObjects(bucketName, "/%s/%s/metadata".formatted(schemaName, tableName));
+        List<String> metadataFiles = hiveMinioDataLake.getMinioClient().listObjects(bucketName, "%s/%s/metadata".formatted(schemaName, tableName));
         assertThat(metadataFiles).isNotEmpty().filteredOn(filePath -> filePath.contains("#")).isEmpty();
 
         // Verify ALTER TABLE succeeds https://github.com/trinodb/trino/issues/14552
@@ -182,7 +181,7 @@ public abstract class BaseIcebergMinioConnectorSmokeTest
         assertUpdate("INSERT INTO " + tableName + " VALUES ('two', 2)", 1);
         assertThat(query("SELECT * FROM " + tableName)).matches("VALUES (VARCHAR 'one', 1), (VARCHAR 'two', 2)");
 
-        List<String> initialMetadataFiles = hiveMinioDataLake.getMinioClient().listObjects(bucketName, "/%s/%s/metadata".formatted(schemaName, tableName));
+        List<String> initialMetadataFiles = hiveMinioDataLake.getMinioClient().listObjects(bucketName, "%s/%s/metadata".formatted(schemaName, tableName));
         assertThat(initialMetadataFiles).isNotEmpty();
 
         List<Long> initialSnapshots = getSnapshotIds(tableName);
@@ -190,7 +189,7 @@ public abstract class BaseIcebergMinioConnectorSmokeTest
 
         assertQuerySucceeds(sessionWithShortRetentionUnlocked, "ALTER TABLE " + tableName + " EXECUTE EXPIRE_SNAPSHOTS (retention_threshold => '0s')");
 
-        List<String> updatedMetadataFiles = hiveMinioDataLake.getMinioClient().listObjects(bucketName, "/%s/%s/metadata".formatted(schemaName, tableName));
+        List<String> updatedMetadataFiles = hiveMinioDataLake.getMinioClient().listObjects(bucketName, "%s/%s/metadata".formatted(schemaName, tableName));
         assertThat(updatedMetadataFiles).isNotEmpty().hasSizeLessThan(initialMetadataFiles.size());
 
         List<Long> updatedSnapshots = getSnapshotIds(tableName);
@@ -204,6 +203,33 @@ public abstract class BaseIcebergMinioConnectorSmokeTest
                 .map(event -> event.responseElements().get("x-amz-request-id"))
                 .collect(toImmutableSet())).hasSize(1);
 
+        assertUpdate("DROP TABLE " + tableName);
+    }
+
+    @Test
+    public void testPathContainsSpecialCharacter()
+    {
+        String tableName = "test_path_special_character" + randomNameSuffix();
+        String location = "s3://%s/%s/%s/".formatted(bucketName, schemaName, tableName);
+        assertUpdate(format(
+                "CREATE TABLE %s (id bigint, part varchar) WITH (partitioning = ARRAY['part'], location='%s')",
+                tableName,
+                location));
+
+        String values = "(1, 'with-hyphen')," +
+                "(2, 'with.dot')," +
+                "(3, 'with:colon')," +
+                "(4, 'with/slash')," +
+                "(5, 'with\\\\backslashes')," +
+                "(6, 'with\\backslash')," +
+                "(7, 'with=equal')," +
+                "(8, 'with?question')," +
+                "(9, 'with!exclamation')," +
+                "(10, 'with%percent')," +
+                "(11, 'with%%percents')," +
+                "(12, 'with space')";
+        assertUpdate("INSERT INTO " + tableName + " VALUES " + values, 12);
+        assertQuery("SELECT * FROM " + tableName, "VALUES " + values);
         assertUpdate("DROP TABLE " + tableName);
     }
 
@@ -233,7 +259,7 @@ public abstract class BaseIcebergMinioConnectorSmokeTest
         HiveMetastore metastore = new BridgingHiveMetastore(
                 testingThriftHiveMetastoreBuilder()
                         .metastoreClient(hiveMinioDataLake.getHiveHadoop().getHiveMetastoreEndpoint())
-                        .build());
+                        .build(this::closeAfterClass));
         metastore.dropTable(schemaName, tableName, false);
         assertThat(metastore.getTable(schemaName, tableName)).isEmpty();
     }
@@ -244,7 +270,7 @@ public abstract class BaseIcebergMinioConnectorSmokeTest
         HiveMetastore metastore = new BridgingHiveMetastore(
                 testingThriftHiveMetastoreBuilder()
                         .metastoreClient(hiveMinioDataLake.getHiveHadoop().getHiveMetastoreEndpoint())
-                        .build());
+                        .build(this::closeAfterClass));
         return metastore
                 .getTable(schemaName, tableName).orElseThrow()
                 .getParameters().get("metadata_location");

@@ -18,7 +18,6 @@ import com.google.common.collect.ImmutableSet;
 import io.airlift.units.Duration;
 import io.trino.client.NodeVersion;
 import io.trino.metadata.InternalNode;
-import io.trino.plugin.base.CatalogName;
 import io.trino.plugin.raptor.legacy.NodeSupplier;
 import io.trino.plugin.raptor.legacy.RaptorColumnHandle;
 import io.trino.plugin.raptor.legacy.RaptorMetadata;
@@ -27,6 +26,7 @@ import io.trino.plugin.raptor.legacy.RaptorTableHandle;
 import io.trino.plugin.raptor.legacy.RaptorTransactionHandle;
 import io.trino.plugin.raptor.legacy.util.DaoSupplier;
 import io.trino.spi.TrinoException;
+import io.trino.spi.catalog.CatalogName;
 import io.trino.spi.connector.ConnectorSplit;
 import io.trino.spi.connector.ConnectorSplitSource;
 import io.trino.spi.connector.ConnectorTableHandle;
@@ -111,7 +111,7 @@ public class TestRaptorSplitManager
         metadata = new RaptorMetadata(dbi, shardManager);
 
         metadata.createTable(SESSION, TEST_TABLE, false);
-        tableHandle = metadata.getTableHandle(SESSION, TEST_TABLE.getTable());
+        tableHandle = metadata.getTableHandle(SESSION, TEST_TABLE.getTable(), Optional.empty(), Optional.empty());
 
         List<ShardInfo> shards = ImmutableList.<ShardInfo>builder()
                 .add(shardInfo(UUID.randomUUID(), nodeName))

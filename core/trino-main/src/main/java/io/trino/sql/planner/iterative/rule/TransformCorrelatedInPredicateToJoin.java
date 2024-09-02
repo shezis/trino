@@ -19,6 +19,14 @@ import com.google.common.collect.ImmutableSet;
 import io.trino.matching.Captures;
 import io.trino.matching.Pattern;
 import io.trino.metadata.Metadata;
+import io.trino.sql.ir.Case;
+import io.trino.sql.ir.Comparison;
+import io.trino.sql.ir.Constant;
+import io.trino.sql.ir.Expression;
+import io.trino.sql.ir.IrUtils;
+import io.trino.sql.ir.IsNull;
+import io.trino.sql.ir.Reference;
+import io.trino.sql.ir.WhenClause;
 import io.trino.sql.planner.PlanNodeIdAllocator;
 import io.trino.sql.planner.Symbol;
 import io.trino.sql.planner.SymbolAllocator;
@@ -35,19 +43,6 @@ import io.trino.sql.planner.plan.JoinType;
 import io.trino.sql.planner.plan.PlanNode;
 import io.trino.sql.planner.plan.PlanVisitor;
 import io.trino.sql.planner.plan.ProjectNode;
-import io.trino.sql.tree.BooleanLiteral;
-import io.trino.sql.tree.Cast;
-import io.trino.sql.tree.ComparisonExpression;
-import io.trino.sql.tree.Expression;
-import io.trino.sql.tree.IsNotNullPredicate;
-import io.trino.sql.tree.IsNullPredicate;
-import io.trino.sql.tree.LongLiteral;
-import io.trino.sql.tree.NotExpression;
-import io.trino.sql.tree.NullLiteral;
-import io.trino.sql.tree.SearchedCaseExpression;
-import io.trino.sql.tree.SymbolReference;
-import io.trino.sql.tree.WhenClause;
-import io.trino.sql.util.AstUtils;
 import jakarta.annotation.Nullable;
 
 import java.util.List;
@@ -59,7 +54,8 @@ import static com.google.common.collect.Iterables.getOnlyElement;
 import static io.trino.matching.Pattern.nonEmpty;
 import static io.trino.spi.type.BigintType.BIGINT;
 import static io.trino.spi.type.BooleanType.BOOLEAN;
-import static io.trino.sql.analyzer.TypeSignatureTranslator.toSqlType;
+import static io.trino.sql.ir.Booleans.FALSE;
+import static io.trino.sql.ir.IrExpressions.not;
 import static io.trino.sql.ir.IrUtils.and;
 import static io.trino.sql.ir.IrUtils.or;
 import static io.trino.sql.planner.plan.AggregationNode.singleAggregation;
@@ -86,7 +82,6 @@ import static java.util.Objects.requireNonNull;
  *       - AssignUniqueId (A')
  *         - A
  * </pre>
- * <p>
  *
  * @see TransformCorrelatedGlobalAggregationWithProjection
  */
@@ -182,9 +177,9 @@ public class TransformCorrelatedInPredicateToJoin
 
         Expression joinExpression = and(
                 or(
-                        new IsNullPredicate(probeSideSymbol.toSymbolReference()),
-                        new ComparisonExpression(ComparisonExpression.Operator.EQUAL, probeSideSymbol.toSymbolReference(), buildSideSymbol.toSymbolReference()),
-                        new IsNullPredicate(buildSideSymbol.toSymbolReference())),
+                        new IsNull(probeSideSymbol.toSymbolReference()),
+                        new Comparison(Comparison.Operator.EQUAL, probeSideSymbol.toSymbolReference(), buildSideSymbol.toSymbolReference()),
+                        new IsNull(buildSideSymbol.toSymbolReference())),
                 correlationCondition);
 
         JoinNode leftOuterJoin = leftOuterJoin(idAllocator, probeSide, buildSide, joinExpression);
@@ -197,7 +192,7 @@ public class TransformCorrelatedInPredicateToJoin
         Symbol nullMatchConditionSymbol = symbolAllocator.newSymbol("nullMatchConditionSymbol", BOOLEAN);
         Expression nullMatchCondition = and(
                 isNotNull(buildSideKnownNonNull),
-                not(matchCondition));
+                not(metadata, matchCondition));
 
         ProjectNode preProjection = new ProjectNode(
                 idAllocator.getNextId(),
@@ -221,11 +216,11 @@ public class TransformCorrelatedInPredicateToJoin
                 singleGroupingSet(probeSide.getOutputSymbols()));
 
         // TODO since we care only about "some count > 0", we could have specialized node instead of leftOuterJoin that does the job without materializing join results
-        SearchedCaseExpression inPredicateEquivalent = new SearchedCaseExpression(
+        Case inPredicateEquivalent = new Case(
                 ImmutableList.of(
                         new WhenClause(isGreaterThan(countMatchesSymbol, 0), booleanConstant(true)),
                         new WhenClause(isGreaterThan(countNullMatchesSymbol, 0), booleanConstant(null))),
-                Optional.of(booleanConstant(false)));
+                FALSE);
         return new ProjectNode(
                 idAllocator.getNextId(),
                 aggregation,
@@ -268,33 +263,28 @@ public class TransformCorrelatedInPredicateToJoin
 
     private static Expression isGreaterThan(Symbol symbol, long value)
     {
-        return new ComparisonExpression(
-                ComparisonExpression.Operator.GREATER_THAN,
+        return new Comparison(
+                Comparison.Operator.GREATER_THAN,
                 symbol.toSymbolReference(),
                 bigint(value));
     }
 
-    private static Expression not(Expression booleanExpression)
+    private Expression isNotNull(Symbol symbol)
     {
-        return new NotExpression(booleanExpression);
-    }
-
-    private static Expression isNotNull(Symbol symbol)
-    {
-        return new IsNotNullPredicate(symbol.toSymbolReference());
+        return not(metadata, new IsNull(symbol.toSymbolReference()));
     }
 
     private static Expression bigint(long value)
     {
-        return new Cast(new LongLiteral(String.valueOf(value)), toSqlType(BIGINT));
+        return new Constant(BIGINT, value);
     }
 
     private static Expression booleanConstant(@Nullable Boolean value)
     {
         if (value == null) {
-            return new Cast(new NullLiteral(), toSqlType(BOOLEAN));
+            return new Constant(BOOLEAN, null);
         }
-        return new BooleanLiteral(value.toString());
+        return new Constant(BOOLEAN, value);
     }
 
     private static class DecorrelatingVisitor
@@ -329,9 +319,9 @@ public class TransformCorrelatedInPredicateToJoin
 
                 // Pull up all symbols used by a filter (except correlation)
                 decorrelated.getCorrelatedPredicates().stream()
-                        .flatMap(AstUtils::preOrder)
-                        .filter(SymbolReference.class::isInstance)
-                        .map(SymbolReference.class::cast)
+                        .flatMap(IrUtils::preOrder)
+                        .filter(Reference.class::isInstance)
+                        .map(Reference.class::cast)
                         .filter(symbolReference -> !correlation.contains(Symbol.from(symbolReference)))
                         .forEach(symbolReference -> assignments.putIdentity(Symbol.from(symbolReference)));
 

@@ -18,15 +18,17 @@ import com.google.common.cache.CacheBuilder;
 import com.google.common.cache.CacheLoader;
 import com.google.common.cache.CacheStats;
 import com.google.common.cache.LoadingCache;
+import com.google.common.collect.ImmutableSet;
 import com.google.common.math.LongMath;
 import com.google.common.util.concurrent.UncheckedExecutionException;
 import com.google.inject.Inject;
 import io.airlift.units.Duration;
-import io.trino.plugin.base.CatalogName;
-import io.trino.plugin.hive.metastore.HiveMetastore;
+import io.trino.metastore.HiveMetastore;
 import io.trino.plugin.hive.metastore.HiveMetastoreFactory;
+import io.trino.plugin.hive.metastore.cache.CachingHiveMetastore.ObjectType;
 import io.trino.spi.NodeManager;
 import io.trino.spi.TrinoException;
+import io.trino.spi.catalog.CatalogName;
 import io.trino.spi.security.ConnectorIdentity;
 import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
@@ -35,6 +37,7 @@ import org.weakref.jmx.Managed;
 import org.weakref.jmx.Nested;
 
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.function.Function;
 
@@ -61,7 +64,7 @@ public class SharedHiveMetastoreCache
     private final Duration userMetastoreCacheTtl;
     private final long userMetastoreCacheMaximumSize;
     private final boolean metastorePartitionCacheEnabled;
-    private final boolean cacheMissing;
+    private final Set<ObjectType> cacheMissing;
 
     private ExecutorService executorService;
 
@@ -83,7 +86,17 @@ public class SharedHiveMetastoreCache
         metastoreRefreshInterval = config.getMetastoreRefreshInterval();
         metastoreCacheMaximumSize = config.getMetastoreCacheMaximumSize();
         metastorePartitionCacheEnabled = config.isPartitionCacheEnabled();
-        cacheMissing = config.isCacheMissing();
+        ImmutableSet.Builder<ObjectType> cacheMissing = ImmutableSet.builder();
+        if (config.isCacheMissing()) {
+            cacheMissing.add(ObjectType.OTHER);
+        }
+        if (config.isCacheMissingPartitions()) {
+            cacheMissing.add(ObjectType.PARTITION);
+        }
+        if (config.isCacheMissingStats()) {
+            cacheMissing.add(ObjectType.STATS);
+        }
+        this.cacheMissing = cacheMissing.build();
 
         userMetastoreCacheTtl = impersonationCachingConfig.getUserMetastoreCacheTtl();
         userMetastoreCacheMaximumSize = impersonationCachingConfig.getUserMetastoreCacheMaximumSize();
@@ -119,7 +132,7 @@ public class SharedHiveMetastoreCache
 
     public HiveMetastoreFactory createCachingHiveMetastoreFactory(HiveMetastoreFactory metastoreFactory)
     {
-        if (!enabled) {
+        if (!enabled || metastoreFactory.hasBuiltInCaching()) {
             return metastoreFactory;
         }
 
@@ -147,8 +160,8 @@ public class SharedHiveMetastoreCache
                 new ReentrantBoundedExecutor(executorService, maxMetastoreRefreshThreads),
                 metastoreCacheMaximumSize,
                 CachingHiveMetastore.StatsRecording.ENABLED,
-                cacheMissing,
-                metastorePartitionCacheEnabled);
+                metastorePartitionCacheEnabled,
+                cacheMissing);
     }
 
     public static class CachingHiveMetastoreFactory
@@ -243,37 +256,9 @@ public class SharedHiveMetastoreCache
 
         @Managed
         @Nested
-        public AggregateCacheStatsMBean getTableNamesStats()
+        public AggregateCacheStatsMBean getTablesStats()
         {
-            return new AggregateCacheStatsMBean(CachingHiveMetastore::getTableNamesCache);
-        }
-
-        @Managed
-        @Nested
-        public AggregateCacheStatsMBean getAllTableNamesStats()
-        {
-            return new AggregateCacheStatsMBean(CachingHiveMetastore::getAllTableNamesCache);
-        }
-
-        @Managed
-        @Nested
-        public AggregateCacheStatsMBean getRelationTypesStats()
-        {
-            return new AggregateCacheStatsMBean(CachingHiveMetastore::getRelationTypesCache);
-        }
-
-        @Managed
-        @Nested
-        public AggregateCacheStatsMBean getAllRelationTypesStats()
-        {
-            return new AggregateCacheStatsMBean(CachingHiveMetastore::getAllRelationTypesCache);
-        }
-
-        @Managed
-        @Nested
-        public AggregateCacheStatsMBean getTableWithParameterStats()
-        {
-            return new AggregateCacheStatsMBean(CachingHiveMetastore::getTablesWithParameterCache);
+            return new AggregateCacheStatsMBean(CachingHiveMetastore::getTablesCacheNew);
         }
 
         @Managed
@@ -288,20 +273,6 @@ public class SharedHiveMetastoreCache
         public AggregateCacheStatsMBean getPartitionStatisticsStats()
         {
             return new AggregateCacheStatsMBean(CachingHiveMetastore::getPartitionStatisticsCache);
-        }
-
-        @Managed
-        @Nested
-        public AggregateCacheStatsMBean getViewNamesStats()
-        {
-            return new AggregateCacheStatsMBean(CachingHiveMetastore::getViewNamesCache);
-        }
-
-        @Managed
-        @Nested
-        public AggregateCacheStatsMBean getAllViewNamesStats()
-        {
-            return new AggregateCacheStatsMBean(CachingHiveMetastore::getAllViewNamesCache);
         }
 
         @Managed

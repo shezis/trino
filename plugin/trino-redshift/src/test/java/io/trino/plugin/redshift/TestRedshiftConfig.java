@@ -28,18 +28,18 @@ public class TestRedshiftConfig
     public void testDefaults()
     {
         assertRecordedDefaults(recordDefaults(RedshiftConfig.class)
-                .setLegacyTypeMapping(false));
+                .setFetchSize(null));
     }
 
     @Test
     public void testExplicitPropertyMappings()
     {
         Map<String, String> properties = ImmutableMap.<String, String>builder()
-                .put("redshift.use-legacy-type-mapping", "true")
+                .put("redshift.fetch-size", "2000")
                 .buildOrThrow();
 
         RedshiftConfig expected = new RedshiftConfig()
-                .setLegacyTypeMapping(true);
+                .setFetchSize(2000);
 
         assertFullMapping(properties, expected);
     }

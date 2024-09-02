@@ -31,6 +31,7 @@ import io.opentelemetry.api.trace.Tracer;
 import io.opentelemetry.context.Context;
 import io.trino.Session;
 import io.trino.exchange.DirectExchangeInput;
+import io.trino.execution.BasicStageInfo;
 import io.trino.execution.BasicStageStats;
 import io.trino.execution.ExecutionFailureInfo;
 import io.trino.execution.NodeTaskMap;
@@ -311,14 +312,12 @@ public class PipelinedQueryScheduler
         if (queryStateMachine.isDone()) {
             return Optional.empty();
         }
-        DistributedStagesScheduler distributedStagesScheduler;
-        switch (retryPolicy) {
-            case QUERY:
-            case NONE:
+        DistributedStagesScheduler distributedStagesScheduler = switch (retryPolicy) {
+            case QUERY, NONE -> {
                 if (attempt > 0) {
                     dynamicFilterService.registerQueryRetry(queryStateMachine.getQueryId(), attempt);
                 }
-                distributedStagesScheduler = DistributedStagesScheduler.create(
+                yield DistributedStagesScheduler.create(
                         queryStateMachine,
                         schedulerStats,
                         nodeScheduler,
@@ -334,10 +333,9 @@ public class PipelinedQueryScheduler
                         tableExecuteContextManager,
                         retryPolicy,
                         attempt);
-                break;
-            default:
-                throw new IllegalArgumentException("Unexpected retry policy: " + retryPolicy);
-        }
+            }
+            default -> throw new IllegalArgumentException("Unexpected retry policy: " + retryPolicy);
+        };
 
         this.distributedStagesScheduler.set(distributedStagesScheduler);
         distributedStagesScheduler.addStateChangeListener(state -> {
@@ -393,8 +391,14 @@ public class PipelinedQueryScheduler
 
     private static boolean isRetryableErrorCode(ErrorCode errorCode)
     {
-        return errorCode == null
-                || errorCode.getType() == INTERNAL_ERROR
+        if (errorCode == null) {
+            return true;
+        }
+
+        if (errorCode.isFatal()) {
+            return false;
+        }
+        return errorCode.getType() == INTERNAL_ERROR
                 || errorCode.getType() == EXTERNAL
                 || errorCode.getCode() == CLUSTER_OUT_OF_MEMORY.toErrorCode().getCode();
     }
@@ -428,7 +432,7 @@ public class PipelinedQueryScheduler
     @Override
     public synchronized void cancelStage(StageId stageId)
     {
-        try (SetThreadName ignored = new SetThreadName("Query-%s", queryStateMachine.getQueryId())) {
+        try (SetThreadName _ = new SetThreadName("Query-%s", queryStateMachine.getQueryId())) {
             coordinatorStagesScheduler.cancelStage(stageId);
             DistributedStagesScheduler distributedStagesScheduler = this.distributedStagesScheduler.get();
             if (distributedStagesScheduler != null) {
@@ -440,7 +444,7 @@ public class PipelinedQueryScheduler
     @Override
     public void failTask(TaskId taskId, Throwable failureCause)
     {
-        try (SetThreadName ignored = new SetThreadName("Query-%s", queryStateMachine.getQueryId())) {
+        try (SetThreadName _ = new SetThreadName("Query-%s", queryStateMachine.getQueryId())) {
             stageManager.failTaskRemotely(taskId, failureCause);
         }
     }
@@ -455,6 +459,12 @@ public class PipelinedQueryScheduler
     public StageInfo getStageInfo()
     {
         return stageManager.getStageInfo();
+    }
+
+    @Override
+    public BasicStageInfo getBasicStageInfo()
+    {
+        return stageManager.getBasicStageInfo();
     }
 
     @Override
@@ -1262,7 +1272,7 @@ public class PipelinedQueryScheduler
         {
             checkState(started.compareAndSet(false, true), "already started");
 
-            try (SetThreadName ignored = new SetThreadName("Query-%s", queryStateMachine.getQueryId())) {
+            try (SetThreadName _ = new SetThreadName("Query-%s", queryStateMachine.getQueryId())) {
                 stageSchedulers.values().forEach(StageScheduler::start);
                 while (!executionSchedule.isFinished()) {
                     List<ListenableFuture<Void>> blockedStages = new ArrayList<>();

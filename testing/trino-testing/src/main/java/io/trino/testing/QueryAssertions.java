@@ -77,7 +77,7 @@ public final class QueryAssertions
         }
         Duration queryTime = nanosSince(start);
         if (queryTime.compareTo(Duration.succinctDuration(1, SECONDS)) > 0) {
-            log.info("FINISHED in Trino: %s", queryTime);
+            log.debug("FINISHED in Trino: %s", queryTime);
         }
 
         if (planAssertion.isPresent()) {
@@ -119,7 +119,7 @@ public final class QueryAssertions
 
         Duration queryTime = nanosSince(start);
         if (queryTime.compareTo(Duration.succinctDuration(1, SECONDS)) > 0) {
-            log.info("FINISHED query %s in Trino: %s", queryId, queryTime);
+            log.debug("FINISHED query %s in Trino: %s", queryId, queryTime);
         }
 
         if (planAssertion.isPresent()) {
@@ -224,7 +224,7 @@ public final class QueryAssertions
         }
         Duration totalTime = nanosSince(start);
         if (totalTime.compareTo(Duration.succinctDuration(1, SECONDS)) > 0) {
-            log.info("FINISHED in Trino: %s, H2: %s, total: %s", actualTime, nanosSince(expectedStart), totalTime);
+            log.debug("FINISHED in Trino: %s, H2: %s, total: %s", actualTime, nanosSince(expectedStart), totalTime);
         }
 
         if (actualResults.getUpdateType().isPresent() || actualResults.getUpdateCount().isPresent()) {
@@ -323,7 +323,7 @@ public final class QueryAssertions
         }
         Duration totalTime = nanosSince(start);
         if (totalTime.compareTo(Duration.succinctDuration(1, SECONDS)) > 0) {
-            log.info("FINISHED in Trino: %s, H2: %s, total: %s", actualTime, nanosSince(expectedStart), totalTime);
+            log.debug("FINISHED in Trino: %s, H2: %s, total: %s", actualTime, nanosSince(expectedStart), totalTime);
         }
 
         if (actualResults.getUpdateType().isPresent() || actualResults.getUpdateCount().isPresent()) {
@@ -496,6 +496,15 @@ public final class QueryAssertions
             QueryRunner queryRunner,
             String sourceCatalog,
             String sourceSchema,
+            Iterable<TpchTable<?>> tables)
+    {
+        copyTpchTables(queryRunner, sourceCatalog, sourceSchema, queryRunner.getDefaultSession(), tables);
+    }
+
+    public static void copyTpchTables(
+            QueryRunner queryRunner,
+            String sourceCatalog,
+            String sourceSchema,
             Session session,
             Iterable<TpchTable<?>> tables)
     {
@@ -513,12 +522,12 @@ public final class QueryAssertions
     public static void copyTable(QueryRunner queryRunner, QualifiedObjectName table, Session session)
     {
         long start = System.nanoTime();
-        @Language("SQL") String sql = format("CREATE TABLE IF NOT EXISTS %s AS SELECT * FROM %s", table.getObjectName(), table);
+        @Language("SQL") String sql = format("CREATE TABLE IF NOT EXISTS %s AS SELECT * FROM %s", table.objectName(), table);
         long rows = (Long) queryRunner.execute(session, sql).getMaterializedRows().get(0).getField(0);
-        log.info("Imported %s rows from %s in %s", rows, table, nanosSince(start));
+        log.debug("Imported %s rows from %s in %s", rows, table, nanosSince(start));
 
-        assertThat(queryRunner.execute(session, "SELECT count(*) FROM " + table.getObjectName()).getOnlyValue())
-                .as("Table is not loaded properly: %s", table.getObjectName())
+        assertThat(queryRunner.execute(session, "SELECT count(*) FROM " + table.objectName()).getOnlyValue())
+                .as("Table is not loaded properly: %s", table.objectName())
                 .isEqualTo(queryRunner.execute(session, "SELECT count(*) FROM " + table).getOnlyValue());
     }
 

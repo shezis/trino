@@ -18,6 +18,7 @@ import com.google.common.collect.SetMultimap;
 import io.trino.filesystem.FileIterator;
 import io.trino.filesystem.Location;
 import io.trino.filesystem.TrinoFileSystem;
+import io.trino.filesystem.TrinoFileSystemException;
 import io.trino.filesystem.TrinoInputFile;
 import io.trino.filesystem.TrinoOutputFile;
 import software.amazon.awssdk.core.exception.SdkException;
@@ -36,12 +37,13 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashMap;
-import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.Executor;
+import java.util.stream.Stream;
 
 import static com.google.common.collect.ImmutableSet.toImmutableSet;
 import static com.google.common.collect.Iterables.partition;
@@ -51,12 +53,14 @@ import static java.util.Objects.requireNonNull;
 final class S3FileSystem
         implements TrinoFileSystem
 {
+    private final Executor uploadExecutor;
     private final S3Client client;
     private final S3Context context;
     private final RequestPayer requestPayer;
 
-    public S3FileSystem(S3Client client, S3Context context)
+    public S3FileSystem(Executor uploadExecutor, S3Client client, S3Context context)
     {
+        this.uploadExecutor = requireNonNull(uploadExecutor, "uploadExecutor is null");
         this.client = requireNonNull(client, "client is null");
         this.context = requireNonNull(context, "context is null");
         this.requestPayer = context.requestPayer();
@@ -77,7 +81,7 @@ final class S3FileSystem
     @Override
     public TrinoOutputFile newOutputFile(Location location)
     {
-        return new S3OutputFile(client, context, new S3Location(location));
+        return new S3OutputFile(uploadExecutor, client, context, new S3Location(location));
     }
 
     @Override
@@ -97,7 +101,7 @@ final class S3FileSystem
             client.deleteObject(request);
         }
         catch (SdkException e) {
-            throw new IOException("Failed to delete file: " + location, e);
+            throw new TrinoFileSystemException("Failed to delete file: " + location, e);
         }
     }
 
@@ -105,13 +109,13 @@ final class S3FileSystem
     public void deleteDirectory(Location location)
             throws IOException
     {
-        FileIterator iterator = listFiles(location);
+        FileIterator iterator = listObjects(location, true);
         while (iterator.hasNext()) {
             List<Location> files = new ArrayList<>();
             while ((files.size() < 1000) && iterator.hasNext()) {
                 files.add(iterator.next().location());
             }
-            deleteFiles(files);
+            deleteObjects(files);
         }
     }
 
@@ -120,7 +124,12 @@ final class S3FileSystem
             throws IOException
     {
         locations.forEach(Location::verifyValidFileLocation);
+        deleteObjects(locations);
+    }
 
+    private void deleteObjects(Collection<Location> locations)
+            throws IOException
+    {
         SetMultimap<String, String> bucketToKeys = locations.stream()
                 .map(S3Location::new)
                 .collect(toMultimap(S3Location::bucket, S3Location::key, HashMultimap::create));
@@ -150,7 +159,7 @@ final class S3FileSystem
                     }
                 }
                 catch (SdkException e) {
-                    throw new IOException("Error while batch deleting files", e);
+                    throw new TrinoFileSystemException("Error while batch deleting files", e);
                 }
             }
         }
@@ -171,6 +180,12 @@ final class S3FileSystem
     public FileIterator listFiles(Location location)
             throws IOException
     {
+        return listObjects(location, false);
+    }
+
+    private FileIterator listObjects(Location location, boolean includeDirectoryObjects)
+            throws IOException
+    {
         S3Location s3Location = new S3Location(location);
 
         String key = s3Location.key();
@@ -185,13 +200,14 @@ final class S3FileSystem
                 .build();
 
         try {
-            Iterator<S3Object> iterator = client.listObjectsV2Paginator(request).contents().stream()
-                    .filter(object -> !object.key().endsWith("/"))
-                    .iterator();
-            return new S3FileIterator(s3Location, iterator);
+            Stream<S3Object> s3ObjectStream = client.listObjectsV2Paginator(request).contents().stream();
+            if (!includeDirectoryObjects) {
+                s3ObjectStream = s3ObjectStream.filter(object -> !object.key().endsWith("/"));
+            }
+            return new S3FileIterator(s3Location, s3ObjectStream.iterator());
         }
         catch (SdkException e) {
-            throw new IOException("Failed to list location: " + location, e);
+            throw new TrinoFileSystemException("Failed to list location: " + location, e);
         }
     }
 
@@ -247,7 +263,7 @@ final class S3FileSystem
                     .collect(toImmutableSet());
         }
         catch (SdkException e) {
-            throw new IOException("Failed to list location: " + location, e);
+            throw new TrinoFileSystemException("Failed to list location: " + location, e);
         }
     }
 

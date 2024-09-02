@@ -162,12 +162,14 @@ public final class AggregationMaskCompiler
 
         // create expression to test if a position is selected
         Variable maskValueBlock = scope.declareVariable(ByteArrayBlock.class, "maskValueBlock");
-        Variable position = scope.declareVariable("position", body, constantInt(0));
-        BytecodeExpression isPositionSelected = testMaskBlock(maskValueBlock, maskBlockMayHaveNull, position);
+        Variable maskValueBlockPosition = scope.declareVariable("maskValueBlockPosition", body, constantInt(0));
+        BytecodeExpression isPositionSelected = testMaskBlock(maskValueBlock, maskBlockMayHaveNull, maskValueBlockPosition);
+
+        Variable pagePosition = scope.declareVariable("pagePosition", body, constantInt(0));
         for (int i = 0; i < nonNullArgs.size(); i++) {
             Variable arg = nonNullArgs.get(i);
             Variable mayHaveNull = nonNullArgMayHaveNulls.get(i);
-            isPositionSelected = and(isPositionSelected, testPositionIsNotNull(arg, mayHaveNull, position));
+            isPositionSelected = and(isPositionSelected, testPositionIsNotNull(arg, mayHaveNull, pagePosition));
         }
 
         // add all positions that pass the tests
@@ -178,31 +180,33 @@ public final class AggregationMaskCompiler
         body.append(new IfStatement()
                 .condition(maskBlock.instanceOf(DictionaryBlock.class))
                         .ifTrue(new BytecodeBlock()
-                                .append(maskValueBlock.set(maskBlock.cast(DictionaryBlock.class).invoke("getDictionary", ValueBlock.class, position).cast(ByteArrayBlock.class)))
+                                .append(maskValueBlock.set(maskBlock.cast(DictionaryBlock.class).invoke("getDictionary", ValueBlock.class).cast(ByteArrayBlock.class)))
                                 .append(rawIds.set(maskBlock.cast(DictionaryBlock.class).invoke("getRawIds", int[].class)))
                                 .append(rawIdsOffset.set(maskBlock.cast(DictionaryBlock.class).invoke("getRawIdsOffset", int.class)))
                                 .append(new ForLoop()
-                                        .initialize(position.set(constantInt(0)))
-                                        .condition(lessThan(position, positionCount))
-                                        .update(position.increment())
+                                        .initialize(pagePosition.set(constantInt(0)))
+                                        .condition(lessThan(pagePosition, positionCount))
+                                        .update(pagePosition.increment())
                                         .body(new BytecodeBlock()
-                                                .append(position.set(rawIds.getElement(add(rawIdsOffset, position))))
+                                                .append(maskValueBlockPosition.set(rawIds.getElement(add(rawIdsOffset, pagePosition))))
                                                 .append(new IfStatement()
                                                         .condition(isPositionSelected)
                                                         .ifTrue(new BytecodeBlock()
-                                                                .append(selectedPositions.setElement(selectedPositionsIndex, position))
+                                                                .append(selectedPositions.setElement(selectedPositionsIndex, pagePosition))
                                                                 .append(selectedPositionsIndex.increment()))))))
                         .ifFalse(new BytecodeBlock()
                                 .append(maskValueBlock.set(maskBlock.cast(ByteArrayBlock.class)))
                                 .append(new ForLoop()
-                                        .initialize(position.set(constantInt(0)))
-                                        .condition(lessThan(position, positionCount))
-                                        .update(position.increment())
-                                        .body(new IfStatement()
-                                                .condition(isPositionSelected)
-                                                .ifTrue(new BytecodeBlock()
-                                                        .append(selectedPositions.setElement(selectedPositionsIndex, position))
-                                                        .append(selectedPositionsIndex.increment()))))));
+                                        .initialize(pagePosition.set(constantInt(0)))
+                                        .condition(lessThan(pagePosition, positionCount))
+                                        .update(pagePosition.increment())
+                                        .body(new BytecodeBlock()
+                                                .append(maskValueBlockPosition.set(pagePosition))
+                                                .append(new IfStatement()
+                                                        .condition(isPositionSelected)
+                                                        .ifTrue(new BytecodeBlock()
+                                                                .append(selectedPositions.setElement(selectedPositionsIndex, pagePosition))
+                                                                .append(selectedPositionsIndex.increment())))))));
 
         body.append(invokeStatic(
                 AggregationMask.class,

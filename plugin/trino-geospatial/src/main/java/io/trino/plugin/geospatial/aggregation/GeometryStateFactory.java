@@ -42,7 +42,7 @@ public class GeometryStateFactory
     {
         private final ObjectBigArray<OGCGeometry> geometries = new ObjectBigArray<>();
 
-        private long groupId;
+        private int groupId;
         private long size;
 
         @Override
@@ -54,14 +54,13 @@ public class GeometryStateFactory
         @Override
         public void setGeometry(OGCGeometry geometry)
         {
-            OGCGeometry previousValue = this.geometries.get(groupId);
+            OGCGeometry previousValue = this.geometries.getAndSet(groupId, geometry);
             size -= getGeometryMemorySize(previousValue);
             size += getGeometryMemorySize(geometry);
-            this.geometries.set(groupId, geometry);
         }
 
         @Override
-        public void ensureCapacity(long size)
+        public void ensureCapacity(int size)
         {
             geometries.ensureCapacity(size);
         }
@@ -73,7 +72,7 @@ public class GeometryStateFactory
         }
 
         @Override
-        public final void setGroupId(long groupId)
+        public final void setGroupId(int groupId)
         {
             this.groupId = groupId;
         }

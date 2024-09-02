@@ -20,23 +20,30 @@ import io.airlift.units.DataSize;
 import io.trino.memory.context.AggregatedMemoryContext;
 import io.trino.parquet.ParquetDataSource;
 import io.trino.parquet.ParquetReaderOptions;
+import io.trino.parquet.metadata.ParquetMetadata;
 import io.trino.parquet.writer.ParquetWriterOptions;
 import io.trino.spi.Page;
+import io.trino.spi.TrinoException;
+import io.trino.spi.block.Block;
 import io.trino.spi.block.LazyBlock;
+import io.trino.spi.connector.ConnectorSession;
 import io.trino.spi.metrics.Count;
 import io.trino.spi.metrics.Metric;
 import io.trino.spi.predicate.Domain;
 import io.trino.spi.predicate.Range;
 import io.trino.spi.predicate.TupleDomain;
 import io.trino.spi.predicate.ValueSet;
+import io.trino.spi.type.ArrayType;
 import io.trino.spi.type.Type;
-import org.apache.parquet.hadoop.metadata.ParquetMetadata;
+import io.trino.testing.TestingConnectorSession;
 import org.junit.jupiter.api.Test;
 
 import java.io.File;
 import java.io.IOException;
 import java.net.URISyntaxException;
 import java.time.LocalDate;
+import java.util.Arrays;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -49,7 +56,9 @@ import static io.trino.parquet.reader.ParquetReader.COLUMN_INDEX_ROWS_FILTERED;
 import static io.trino.spi.type.BigintType.BIGINT;
 import static io.trino.spi.type.DateType.DATE;
 import static io.trino.spi.type.IntegerType.INTEGER;
+import static io.trino.spi.type.VarcharType.VARCHAR;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 public class TestParquetReader
 {
@@ -74,9 +83,9 @@ public class TestParquetReader
         assertThat(parquetMetadata.getBlocks().size()).isGreaterThan(1);
         // Verify file has only non-dictionary encodings as dictionary memory usage is already tested in TestFlatColumnReader#testMemoryUsage
         parquetMetadata.getBlocks().forEach(block -> {
-            block.getColumns()
+            block.columns()
                     .forEach(columnChunkMetaData -> assertThat(columnChunkMetaData.getEncodingStats().hasDictionaryEncodedPages()).isFalse());
-            assertThat(block.getRowCount()).isEqualTo(100);
+            assertThat(block.rowCount()).isEqualTo(100);
         });
 
         AggregatedMemoryContext memoryContext = newSimpleAggregatedMemoryContext();
@@ -96,7 +105,7 @@ public class TestParquetReader
         assertThat(currentMemoryUsage).isGreaterThan(initialMemoryUsage);
 
         // Memory usage does not change until next row group (1 page per row-group)
-        long rowGroupRowCount = parquetMetadata.getBlocks().get(0).getRowCount();
+        long rowGroupRowCount = parquetMetadata.getBlocks().get(0).rowCount();
         int rowsRead = page.getPositionCount();
         while (rowsRead < rowGroupRowCount) {
             rowsRead += reader.nextPage().getPositionCount();
@@ -132,7 +141,7 @@ public class TestParquetReader
                         "l_shipdate", Domain.multipleValues(DATE, ImmutableList.of(LocalDate.of(1993, 1, 1).toEpochDay(), LocalDate.of(1997, 1, 1).toEpochDay())),
                         "l_commitdate", Domain.create(ValueSet.ofRanges(Range.greaterThan(DATE, LocalDate.of(1995, 1, 1).toEpochDay())), false)));
 
-        try (ParquetReader reader = createParquetReader(dataSource, parquetMetadata, newSimpleAggregatedMemoryContext(), types, columnNames, predicate)) {
+        try (ParquetReader reader = createParquetReader(dataSource, parquetMetadata, new ParquetReaderOptions(), newSimpleAggregatedMemoryContext(), types, columnNames, predicate)) {
             Page page = reader.nextPage();
             int rowsRead = 0;
             while (page != null) {
@@ -144,7 +153,60 @@ public class TestParquetReader
             assertThat(metrics).containsKey(COLUMN_INDEX_ROWS_FILTERED);
             // Column index should filter at least the first row group
             assertThat(((Count<?>) metrics.get(COLUMN_INDEX_ROWS_FILTERED)).getTotal())
-                    .isGreaterThanOrEqualTo(parquetMetadata.getBlocks().get(0).getRowCount());
+                    .isGreaterThanOrEqualTo(parquetMetadata.getBlocks().get(0).rowCount());
+        }
+    }
+
+    @Test
+    public void testBackwardsCompatibleRepeatedStringField()
+            throws Exception
+    {
+        File parquetFile = new File(Resources.getResource("parquet_repeated_primitives/string/old-repeated-string.parquet").toURI());
+        List<List<String>> expectedValues = ImmutableList.of(Arrays.asList("hello", "world"), Arrays.asList("good", "bye"), Arrays.asList("one", "two", "three"));
+        testReadingOldParquetFiles(parquetFile, ImmutableList.of("myString"), new ArrayType(VARCHAR), expectedValues);
+    }
+
+    @Test
+    public void testBackwardsCompatibleRepeatedIntegerField()
+            throws Exception
+    {
+        File parquetFile = new File(Resources.getResource("parquet_repeated_primitives/int/old-repeated-int.parquet").toURI());
+        List<List<Integer>> expectedValues = ImmutableList.of(Arrays.asList(1, 2, 3));
+        testReadingOldParquetFiles(parquetFile, ImmutableList.of("repeatedInt"), new ArrayType(INTEGER), expectedValues);
+    }
+
+    @Test
+    public void testBackwardsCompatibleRepeatedPrimitiveFieldDefinedAsPrimitive()
+    {
+        assertThatThrownBy(() -> {
+            File parquetFile = new File(Resources.getResource("parquet_repeated_primitives/int/old-repeated-int.parquet").toURI());
+            List<List<Integer>> expectedValues = ImmutableList.of(Arrays.asList(1, 2, 3));
+            testReadingOldParquetFiles(parquetFile, ImmutableList.of("repeatedInt"), INTEGER, expectedValues);
+        }).hasMessage("Unsupported Trino column type (integer) for Parquet column ([repeatedint] repeated int32 repeatedint)")
+                .isInstanceOf(TrinoException.class);
+    }
+
+    private void testReadingOldParquetFiles(File file, List<String> columnNames, Type columnType, List<?> expectedValues)
+            throws IOException
+    {
+        ParquetDataSource dataSource = new FileParquetDataSource(
+                file,
+                new ParquetReaderOptions());
+        ConnectorSession session = TestingConnectorSession.builder().build();
+        ParquetMetadata parquetMetadata = MetadataReader.readFooter(dataSource, Optional.empty());
+        try (ParquetReader reader = createParquetReader(dataSource, parquetMetadata, newSimpleAggregatedMemoryContext(), ImmutableList.of(columnType), columnNames)) {
+            Page page = reader.nextPage();
+            Iterator<?> expected = expectedValues.iterator();
+            while (page != null) {
+                Block block = page.getBlock(0);
+                for (int i = 0; i < block.getPositionCount(); i++) {
+                    assertThat(columnType.getObjectValue(session, block, i)).isEqualTo(expected.next());
+                }
+                page = reader.nextPage();
+            }
+            assertThat(expected.hasNext())
+                    .describedAs("Read fewer values than expected")
+                    .isFalse();
         }
     }
 }

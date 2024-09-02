@@ -18,7 +18,10 @@ import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import io.trino.cost.TaskCountEstimator;
 import io.trino.spi.connector.SortOrder;
-import io.trino.sql.planner.IrTypeAnalyzer;
+import io.trino.sql.ir.Cast;
+import io.trino.sql.ir.Comparison;
+import io.trino.sql.ir.Constant;
+import io.trino.sql.ir.Reference;
 import io.trino.sql.planner.RuleStatsRecorder;
 import io.trino.sql.planner.assertions.BasePlanTest;
 import io.trino.sql.planner.assertions.ExpectedValueProvider;
@@ -31,15 +34,18 @@ import org.intellij.lang.annotations.Language;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
-import java.util.Optional;
 
+import static io.trino.spi.type.DoubleType.DOUBLE;
+import static io.trino.spi.type.IntegerType.INTEGER;
+import static io.trino.sql.ir.Comparison.Operator.GREATER_THAN;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.anyTree;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.filter;
-import static io.trino.sql.planner.assertions.PlanMatchPattern.functionCall;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.sort;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.specification;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.tableScan;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.window;
+import static io.trino.sql.planner.assertions.PlanMatchPattern.windowFunction;
+import static io.trino.sql.planner.plan.WindowNode.Frame.DEFAULT_FRAME;
 
 public class TestEliminateSorts
         extends BasePlanTest
@@ -66,7 +72,7 @@ public class TestEliminateSorts
                                 anyTree(
                                         window(windowMatcherBuilder -> windowMatcherBuilder
                                                         .specification(windowSpec)
-                                                        .addFunction(functionCall("row_number", Optional.empty(), ImmutableList.of())),
+                                                        .addFunction(windowFunction("row_number", ImmutableList.of(), DEFAULT_FRAME)),
                                                 anyTree(LINEITEM_TABLESCAN_Q)))));
 
         assertUnitPlan(sql, pattern);
@@ -88,10 +94,11 @@ public class TestEliminateSorts
                 anyTree(
                         sort(
                                 anyTree(
-                                        filter("QUANTITY > CAST(10 AS DOUBLE)",
+                                        filter(
+                                                new Comparison(GREATER_THAN, new Reference(DOUBLE, "QUANTITY"), new Cast(new Constant(INTEGER, 10L), DOUBLE)),
                                                 window(windowMatcherBuilder -> windowMatcherBuilder
                                                                 .specification(windowSpec)
-                                                                .addFunction(functionCall("row_number", Optional.empty(), ImmutableList.of())),
+                                                                .addFunction(windowFunction("row_number", ImmutableList.of(), DEFAULT_FRAME)),
                                                         anyTree(LINEITEM_TABLESCAN_Q))))));
 
         assertUnitPlan(sql, pattern);
@@ -99,7 +106,6 @@ public class TestEliminateSorts
 
     private void assertUnitPlan(@Language("SQL") String sql, PlanMatchPattern pattern)
     {
-        IrTypeAnalyzer typeAnalyzer = new IrTypeAnalyzer(getPlanTester().getPlannerContext());
         List<PlanOptimizer> optimizers = ImmutableList.of(
                 new IterativeOptimizer(
                         getPlanTester().getPlannerContext(),
@@ -109,7 +115,7 @@ public class TestEliminateSorts
                         ImmutableSet.of(
                                 new RemoveRedundantIdentityProjections(),
                                 new DetermineTableScanNodePartitioning(getPlanTester().getPlannerContext().getMetadata(), getPlanTester().getNodePartitioningManager(), new TaskCountEstimator(() -> 10)))),
-                new AddExchanges(getPlanTester().getPlannerContext(), typeAnalyzer, getPlanTester().getStatsCalculator(), getPlanTester().getTaskCountEstimator()));
+                new AddExchanges(getPlanTester().getPlannerContext(), getPlanTester().getStatsCalculator(), getPlanTester().getTaskCountEstimator()));
 
         assertPlan(sql, pattern, optimizers);
     }

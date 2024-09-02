@@ -13,20 +13,20 @@
  */
 package io.trino.plugin.iceberg;
 
+import com.google.inject.Binder;
 import com.google.inject.Injector;
 import com.google.inject.Key;
 import com.google.inject.Module;
-import com.google.inject.TypeLiteral;
 import io.airlift.bootstrap.Bootstrap;
 import io.airlift.bootstrap.LifeCycleManager;
+import io.airlift.configuration.AbstractConfigurationAwareModule;
 import io.airlift.event.client.EventModule;
 import io.airlift.json.JsonModule;
 import io.opentelemetry.api.OpenTelemetry;
 import io.opentelemetry.api.trace.Tracer;
 import io.trino.filesystem.manager.FileSystemModule;
-import io.trino.plugin.base.CatalogName;
 import io.trino.plugin.base.classloader.ClassLoaderSafeConnectorPageSinkProvider;
-import io.trino.plugin.base.classloader.ClassLoaderSafeConnectorPageSourceProvider;
+import io.trino.plugin.base.classloader.ClassLoaderSafeConnectorPageSourceProviderFactory;
 import io.trino.plugin.base.classloader.ClassLoaderSafeConnectorSplitManager;
 import io.trino.plugin.base.classloader.ClassLoaderSafeNodePartitioningProvider;
 import io.trino.plugin.base.jmx.ConnectorObjectNameGeneratorModule;
@@ -38,6 +38,7 @@ import io.trino.plugin.iceberg.catalog.IcebergCatalogModule;
 import io.trino.spi.NodeManager;
 import io.trino.spi.PageIndexerFactory;
 import io.trino.spi.PageSorter;
+import io.trino.spi.catalog.CatalogName;
 import io.trino.spi.classloader.ThreadContextClassLoader;
 import io.trino.spi.connector.CatalogHandle;
 import io.trino.spi.connector.Connector;
@@ -46,7 +47,7 @@ import io.trino.spi.connector.ConnectorContext;
 import io.trino.spi.connector.ConnectorFactory;
 import io.trino.spi.connector.ConnectorNodePartitioningProvider;
 import io.trino.spi.connector.ConnectorPageSinkProvider;
-import io.trino.spi.connector.ConnectorPageSourceProvider;
+import io.trino.spi.connector.ConnectorPageSourceProviderFactory;
 import io.trino.spi.connector.ConnectorSplitManager;
 import io.trino.spi.connector.TableProcedureMetadata;
 import io.trino.spi.function.FunctionProvider;
@@ -62,6 +63,7 @@ import java.util.Set;
 import static com.google.common.base.Verify.verify;
 import static com.google.inject.util.Modules.EMPTY_MODULE;
 import static io.trino.plugin.base.Versions.checkStrictSpiVersionMatch;
+import static java.util.Objects.requireNonNull;
 
 public class IcebergConnectorFactory
         implements ConnectorFactory
@@ -87,7 +89,7 @@ public class IcebergConnectorFactory
             Optional<Module> icebergCatalogModule)
     {
         ClassLoader classLoader = IcebergConnectorFactory.class.getClassLoader();
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
             Bootstrap app = new Bootstrap(
                     new EventModule(),
                     new MBeanModule(),
@@ -97,7 +99,7 @@ public class IcebergConnectorFactory
                     new IcebergSecurityModule(),
                     icebergCatalogModule.orElse(new IcebergCatalogModule()),
                     new MBeanServerModule(),
-                    new FileSystemModule(catalogName, context.getNodeManager(), context.getOpenTelemetry()),
+                    new IcebergFileSystemModule(catalogName, context),
                     binder -> {
                         binder.bind(OpenTelemetry.class).toInstance(context.getOpenTelemetry());
                         binder.bind(Tracer.class).toInstance(context.getTracer());
@@ -119,18 +121,18 @@ public class IcebergConnectorFactory
             LifeCycleManager lifeCycleManager = injector.getInstance(LifeCycleManager.class);
             IcebergTransactionManager transactionManager = injector.getInstance(IcebergTransactionManager.class);
             ConnectorSplitManager splitManager = injector.getInstance(ConnectorSplitManager.class);
-            ConnectorPageSourceProvider connectorPageSource = injector.getInstance(ConnectorPageSourceProvider.class);
+            ConnectorPageSourceProviderFactory connectorPageSource = injector.getInstance(ConnectorPageSourceProviderFactory.class);
             ConnectorPageSinkProvider pageSinkProvider = injector.getInstance(ConnectorPageSinkProvider.class);
             ConnectorNodePartitioningProvider connectorDistributionProvider = injector.getInstance(ConnectorNodePartitioningProvider.class);
-            Set<SessionPropertiesProvider> sessionPropertiesProviders = injector.getInstance(Key.get(new TypeLiteral<>() {}));
+            Set<SessionPropertiesProvider> sessionPropertiesProviders = injector.getInstance(new Key<>() {});
             IcebergTableProperties icebergTableProperties = injector.getInstance(IcebergTableProperties.class);
             IcebergMaterializedViewProperties materializedViewProperties = injector.getInstance(IcebergMaterializedViewProperties.class);
             IcebergAnalyzeProperties icebergAnalyzeProperties = injector.getInstance(IcebergAnalyzeProperties.class);
-            Set<Procedure> procedures = injector.getInstance(Key.get(new TypeLiteral<>() {}));
-            Set<TableProcedureMetadata> tableProcedures = injector.getInstance(Key.get(new TypeLiteral<>() {}));
-            Set<ConnectorTableFunction> tableFunctions = injector.getInstance(Key.get(new TypeLiteral<>() {}));
+            Set<Procedure> procedures = injector.getInstance(new Key<>() {});
+            Set<TableProcedureMetadata> tableProcedures = injector.getInstance(new Key<>() {});
+            Set<ConnectorTableFunction> tableFunctions = injector.getInstance(new Key<>() {});
             FunctionProvider functionProvider = injector.getInstance(FunctionProvider.class);
-            Optional<ConnectorAccessControl> accessControl = injector.getInstance(Key.get(new TypeLiteral<>() {}));
+            Optional<ConnectorAccessControl> accessControl = injector.getInstance(new Key<>() {});
 
             verify(!injector.getBindings().containsKey(Key.get(HiveConfig.class)), "HiveConfig should not be bound");
 
@@ -139,7 +141,7 @@ public class IcebergConnectorFactory
                     lifeCycleManager,
                     transactionManager,
                     new ClassLoaderSafeConnectorSplitManager(splitManager, classLoader),
-                    new ClassLoaderSafeConnectorPageSourceProvider(connectorPageSource, classLoader),
+                    new ClassLoaderSafeConnectorPageSourceProviderFactory(connectorPageSource, classLoader),
                     new ClassLoaderSafeConnectorPageSinkProvider(pageSinkProvider, classLoader),
                     new ClassLoaderSafeNodePartitioningProvider(connectorDistributionProvider, classLoader),
                     sessionPropertiesProviders,
@@ -152,6 +154,28 @@ public class IcebergConnectorFactory
                     tableProcedures,
                     tableFunctions,
                     functionProvider);
+        }
+    }
+
+    private static class IcebergFileSystemModule
+            extends AbstractConfigurationAwareModule
+    {
+        private final String catalogName;
+        private final NodeManager nodeManager;
+        private final OpenTelemetry openTelemetry;
+
+        public IcebergFileSystemModule(String catalogName, ConnectorContext context)
+        {
+            this.catalogName = requireNonNull(catalogName, "catalogName is null");
+            this.nodeManager = context.getNodeManager();
+            this.openTelemetry = context.getOpenTelemetry();
+        }
+
+        @Override
+        protected void setup(Binder binder)
+        {
+            boolean metadataCacheEnabled = buildConfigObject(IcebergConfig.class).isMetadataCacheEnabled();
+            install(new FileSystemModule(catalogName, nodeManager, openTelemetry, metadataCacheEnabled));
         }
     }
 }

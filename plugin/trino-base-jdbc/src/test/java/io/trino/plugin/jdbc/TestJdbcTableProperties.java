@@ -13,7 +13,6 @@
  */
 package io.trino.plugin.jdbc;
 
-import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import io.trino.spi.connector.ConnectorSession;
 import io.trino.testing.AbstractTestQueryFramework;
@@ -22,6 +21,7 @@ import io.trino.tpch.TpchTable;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.parallel.Execution;
 
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -41,7 +41,7 @@ public class TestJdbcTableProperties
     protected QueryRunner createQueryRunner()
             throws Exception
     {
-        TestingH2JdbcModule module = new TestingH2JdbcModule((config, connectionFactory, identifierMapping) -> new TestingH2JdbcClient(config, connectionFactory, identifierMapping)
+        TestingH2JdbcModule module = new TestingH2JdbcModule((config, connectionFactory, queryBuilder, identifierMapping) -> new TestingH2JdbcClient(config, connectionFactory, queryBuilder, identifierMapping)
         {
             @Override
             public Map<String, Object> getTableProperties(ConnectorSession session, JdbcTableHandle tableHandle)
@@ -50,7 +50,7 @@ public class TestJdbcTableProperties
                 return ImmutableMap.of();
             }
         });
-        return createH2QueryRunner(ImmutableList.copyOf(TpchTable.getTables()), properties, module);
+        return createH2QueryRunner(List.of(TpchTable.NATION), properties, module);
     }
 
     @Test
@@ -66,7 +66,7 @@ public class TestJdbcTableProperties
     public void testGetTablePropertiesIsCalled()
     {
         AtomicInteger counter = new AtomicInteger();
-        onGetTableProperties = () -> counter.incrementAndGet();
+        onGetTableProperties = counter::incrementAndGet;
         assertQuerySucceeds("SHOW CREATE TABLE nation");
         assertThat(counter.get()).isOne();
     }

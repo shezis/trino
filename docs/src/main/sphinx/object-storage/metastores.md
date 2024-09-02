@@ -10,7 +10,6 @@ partition projection metadata or implement first class support for Avro tables.
 These requirements are discussed later in this topic.
 
 (general-metastore-properties)=
-
 ## General metastore configuration properties
 
 The following table describes general metastore configuration properties, most
@@ -41,16 +40,29 @@ are also available. They are discussed later in this topic.
     object storage itself. A small amount of metadata, however, still requires
     the use of a metastore. In the Iceberg ecosystem, these smaller metastores
     are called Iceberg metadata catalogs, or just catalogs. The examples in each
-    subsection depict the contents of a Trino catalog file that uses the the
+    subsection depict the contents of a Trino catalog file that uses the
     Iceberg connector to configures different Iceberg metadata catalogs.
 
     You must set this property in all Iceberg catalog property files. Valid
-    values are `HIVE_METASTORE`, `GLUE`, `JDBC`, `REST`, and `NESSIE`.
-  -
+    values are `hive_metastore`, `glue`, `jdbc`, `rest`, `nessie`, and
+    `snowflake`.
+  - `hive_metastore`
 * - `hive.metastore-cache.cache-partitions`
   - Enable caching for partition metadata. You can disable caching to avoid
     inconsistent behavior that results from it.
   - `true`
+* - `hive.metastore-cache.cache-missing`
+  - Enable caching the fact that a table is missing to prevent future metastore
+    calls for that table.
+  - `true`
+* - `hive.metastore-cache.cache-missing-partitions`
+  - Enable caching the fact that a partition is missing to prevent future
+    metastore calls for that partition.
+  - `false`
+* - `hive.metastore-cache.cache-missing-stats`
+  - Enable caching the fact that table statistics for a specific table are 
+    missing to prevent future metastore calls.
+  - `false`
 * - `hive.metastore-cache-ttl`
   - Duration of how long cached metastore data is considered valid.
   - `0s`
@@ -59,7 +71,7 @@ are also available. They are discussed later in this topic.
   - `5m`
 * - `hive.metastore-cache-maximum-size`
   - Maximum number of metastore data objects in the Hive metastore cache.
-  - `10000`
+  - `20000`
 * - `hive.metastore-refresh-interval`
   - Asynchronously refresh cached metastore data after access if it is older
     than this but is not yet expired, allowing subsequent accesses to see fresh
@@ -75,7 +87,6 @@ are also available. They are discussed later in this topic.
 :::
 
 (hive-thrift-metastore)=
-
 ## Thrift metastore configuration properties
 
 In order to use a Hive Thrift metastore, you must configure the metastore with
@@ -183,6 +194,13 @@ properties:
 * - `hive.metastore.thrift.txn-lock-max-wait`
   - Maximum time to wait to acquire hive transaction lock.
   - `10m`
+* - `hive.metastore.thrift.catalog-name`
+  - The term "Hive metastore catalog name" refers to the abstraction concept
+    within Hive, enabling various systems to connect to distinct, independent
+    catalogs stored in the metastore. By default, the catalog name in Hive
+    metastore is set to "hive." When this configuration property is left empty,
+    the default catalog of the Hive metastore will be accessed.
+  -
 :::
 
 Use the following configuration properties for HTTP client transport mode, so
@@ -209,12 +227,119 @@ when the `hive.metastore.uri` uses the `http://` or `https://` protocol.
     `header1:value1,header2:value2` sends two headers `header1` and `header2`
     with the values as `value1` and `value2`. Escape comma (`,`) or colon(`:`)
     characters in a header name or value with a backslash (`\`). Use
-    `X-Databricks-Unity-Catalog-Name=[catalog_name]` to configure the required
+    `X-Databricks-Catalog-Name:[catalog_name]` to configure the required
     header values for Unity catalog.
 :::
 
-(hive-glue-metastore)=
+(hive-thrift-metastore-authentication)=
+### Thrift metastore authentication
 
+In a Kerberized Hadoop cluster, Trino connects to the Hive metastore Thrift
+service using {abbr}`SASL (Simple Authentication and Security Layer)` and
+authenticates using Kerberos. Kerberos authentication for the metastore is
+configured in the connector's properties file using the following optional
+properties:
+
+:::{list-table} Hive metastore Thrift service authentication properties
+:widths: 30, 55, 15
+:header-rows: 1
+
+* - Property value
+  - Description
+  - Default
+* - `hive.metastore.authentication.type`
+  - Hive metastore authentication type. One of `NONE` or `KERBEROS`. When using
+    the default value of `NONE`, Kerberos authentication is disabled, and no
+    other properties must be configured.
+
+    When set to `KERBEROS` the Hive connector connects to the Hive metastore
+    Thrift service using SASL and authenticate using Kerberos.
+  - `NONE`
+* - `hive.metastore.thrift.impersonation.enabled`
+  - Enable Hive metastore end user impersonation. See
+    [](hive-security-metastore-impersonation) for more information.
+  - `false`
+* - `hive.metastore.service.principal`
+  - The Kerberos principal of the Hive metastore service. The coordinator uses
+    this to authenticate the Hive metastore.
+
+    The `_HOST` placeholder can be used in this property value. When connecting
+    to the Hive metastore, the Hive connector substitutes in the hostname of the
+    **metastore** server it is connecting to. This is useful if the metastore
+    runs on multiple hosts.
+
+    Example: `hive/hive-server-host@EXAMPLE.COM` or `hive/_HOST@EXAMPLE.COM`.
+  -
+* - `hive.metastore.client.principal`
+  - The Kerberos principal that Trino uses when connecting to the Hive metastore
+    service.
+
+    Example: `trino/trino-server-node@EXAMPLE.COM` or `trino/_HOST@EXAMPLE.COM`.
+
+    The `_HOST` placeholder can be used in this property value. When connecting
+    to the Hive metastore, the Hive connector substitutes in the hostname of the
+    **worker** node Trino is running on. This is useful if each worker node has
+    its own Kerberos principal.
+
+    Unless [](hive-security-metastore-impersonation) is enabled, the principal
+    specified by `hive.metastore.client.principal` must have sufficient
+    privileges to remove files and directories within the `hive/warehouse`
+    directory.
+
+    **Warning:** If the principal does have sufficient permissions, only the
+    metadata is removed, and the data continues to consume disk space. This
+    occurs because the Hive metastore is responsible for deleting the internal
+    table data. When the metastore is configured to use Kerberos authentication,
+    all of the HDFS operations performed by the metastore are impersonated.
+    Errors deleting data are silently ignored.
+  -
+* - `hive.metastore.client.keytab`
+  - The path to the keytab file that contains a key for the principal
+      specified by `hive.metastore.client.principal`. This file must be
+      readable by the operating system user running Trino.
+  -
+:::
+
+The following sections describe the configuration properties and values needed
+for the various authentication configurations needed to use the Hive metastore
+Thrift service with the Hive connector.
+
+#### Default `NONE` authentication without impersonation
+
+```text
+hive.metastore.authentication.type=NONE
+```
+
+The default authentication type for the Hive metastore is `NONE`. When the
+authentication type is `NONE`, Trino connects to an unsecured Hive
+metastore. Kerberos is not used.
+
+(hive-security-metastore-impersonation)=
+#### `KERBEROS` authentication with impersonation
+
+```text
+hive.metastore.authentication.type=KERBEROS
+hive.metastore.thrift.impersonation.enabled=true
+hive.metastore.service.principal=hive/hive-metastore-host.example.com@EXAMPLE.COM
+hive.metastore.client.principal=trino@EXAMPLE.COM
+hive.metastore.client.keytab=/etc/trino/hive.keytab
+```
+
+When the authentication type for the Hive metastore Thrift service is
+`KERBEROS`, Trino connects as the Kerberos principal specified by the
+property `hive.metastore.client.principal`. Trino authenticates this
+principal using the keytab specified by the `hive.metastore.client.keytab`
+property, and verifies that the identity of the metastore matches
+`hive.metastore.service.principal`.
+
+When using `KERBEROS` Metastore authentication with impersonation, the
+principal specified by the `hive.metastore.client.principal` property must be
+allowed to impersonate the current Trino user, as discussed in the section
+[](hdfs-security-impersonation).
+
+Keytab files must be distributed to every node in the Trino cluster.
+
+(hive-glue-metastore)=
 ## AWS Glue catalog configuration properties
 
 In order to use an AWS Glue catalog, you must configure your catalog file as
@@ -242,10 +367,6 @@ properties:
   - AWS region of the STS service to authenticate with. This is required when
     running in a GovCloud region. Example: `us-gov-east-1`
   -
-* - `hive.metastore.glue.proxy-api-id`
-  - The ID of the Glue Proxy API, when accessing Glue via an VPC endpoint in API
-    Gateway.
-  -
 * - `hive.metastore.glue.sts.endpoint`
   - STS endpoint URL to use when authenticating to Glue (optional). Example:
     `https://sts.us-gov-east-1.amazonaws.com`
@@ -264,10 +385,12 @@ properties:
   - Default warehouse directory for schemas created without an explicit
     `location` property.
   -
-* - `hive.metastore.glue.aws-credentials-provider`
-  - Fully qualified name of the Java class to use for obtaining AWS credentials.
-    Can be used to supply a custom credentials provider.
-  -
+* - `hive.metastore.glue.use-web-identity-token-credentials-provider`
+  - If you are running Trino on Amazon EKS, and authenticate using a Kubernetes
+    service account, you can set this property to `true`. Setting to `true` forces
+    Trino to not try using different credential providers from the default credential
+    provider chain, and instead directly use credentials from the service account.
+  - `false`
 * - `hive.metastore.glue.aws-access-key`
   - AWS access key to use to connect to the Glue Catalog. If specified along
     with `hive.metastore.glue.aws-secret-key`, this parameter takes precedence
@@ -291,19 +414,9 @@ properties:
 * - `hive.metastore.glue.partitions-segments`
   - Number of segments for partitioned Glue tables.
   - `5`
-* - `hive.metastore.glue.get-partition-threads`
-  - Number of threads for parallel partition fetches from Glue.
-  - `20`
-* - `hive.metastore.glue.read-statistics-threads`
-  - Number of threads for parallel statistic fetches from Glue.
-  - `5`
-* - `hive.metastore.glue.write-statistics-threads`
-  - Number of threads for parallel statistic writes to Glue.
-  - `5`
 :::
 
 (iceberg-glue-catalog)=
-
 ### Iceberg-specific Glue catalog configuration properties
 
 When using the Glue catalog, the Iceberg connector supports the same
@@ -336,7 +449,6 @@ Iceberg-specific REST, Nessie or JDBC metadata catalogs, as discussed in this
 section.
 
 (iceberg-rest-catalog)=
-
 ### REST catalog
 
 In order to use the Iceberg REST catalog, configure the catalog type
@@ -352,6 +464,9 @@ following properties:
 * - `iceberg.rest-catalog.uri`
   - REST server API endpoint URI (required). Example:
     `http://iceberg-with-rest:8181`
+* - `iceberg.rest-catalog.prefix`
+  - The prefix for the resource path to use with the REST catalog server (optional).
+    Example: `dev`
 * - `iceberg.rest-catalog.warehouse`
   - Warehouse identifier/location for the catalog (optional). Example:
     `s3://my_bucket/warehouse_location`
@@ -368,6 +483,9 @@ following properties:
   - The credential to exchange for a token in the OAuth2 client credentials flow
     with the server. A `token` or `credential` is required for `OAUTH2`
     security. Example: `AbCdEf123456`
+* - `iceberg.rest-catalog.oauth2.scope`
+  - Scope to be used when communicating with the REST Catalog. Applicable only
+    when using `credential`.
 :::
 
 The following example shows a minimal catalog configuration using an Iceberg
@@ -379,16 +497,18 @@ iceberg.catalog.type=rest
 iceberg.rest-catalog.uri=http://iceberg-with-rest:8181
 ```
 
-The REST catalog does not support [view management](sql-view-management) or
-[materialized view management](sql-materialized-view-management).
+The REST catalog supports [view management](sql-view-management) 
+using the [Iceberg View specification](https://iceberg.apache.org/view-spec/).
+
+The REST catalog does not support [materialized view management](sql-materialized-view-management).
 
 (iceberg-jdbc-catalog)=
-
 ### JDBC catalog
 
 The Iceberg JDBC catalog is supported for the Iceberg connector.  At a minimum,
-`iceberg.jdbc-catalog.driver-class`, `iceberg.jdbc-catalog.connection-url`
-and `iceberg.jdbc-catalog.catalog-name` must be configured. When using any
+`iceberg.jdbc-catalog.driver-class`, `iceberg.jdbc-catalog.connection-url`,
+`iceberg.jdbc-catalog.default-warehouse-dir`, and
+`iceberg.jdbc-catalog.catalog-name` must be configured. When using any
 database besides PostgreSQL, a JDBC driver jar file must be placed in the plugin
 directory.
 
@@ -397,17 +517,13 @@ The JDBC catalog may have compatibility issues if Iceberg introduces breaking
 changes in the future. Consider the {ref}`REST catalog
 <iceberg-rest-catalog>` as an alternative solution.
 
-The JDBC catalog requires the metadata tables to already exist. 
+The JDBC catalog requires the metadata tables to already exist.
 Refer to [Iceberg repository](https://github.com/apache/iceberg/blob/main/core/src/main/java/org/apache/iceberg/jdbc/JdbcUtil.java)
 for creating those tables.
 :::
 
-At a minimum, `iceberg.jdbc-catalog.driver-class`,
-`iceberg.jdbc-catalog.connection-url`, and
-`iceberg.jdbc-catalog.catalog-name` must be configured. When using any
-database besides PostgreSQL, a JDBC driver jar file must be placed in the plugin
-directory. The following example shows a minimal catalog configuration using an
-Iceberg REST metadata catalog:
+The following example shows a minimal catalog configuration using an
+Iceberg JDBC metadata catalog:
 
 ```text
 connector.name=iceberg
@@ -420,11 +536,9 @@ iceberg.jdbc-catalog.connection-password=test
 iceberg.jdbc-catalog.default-warehouse-dir=s3://bucket
 ```
 
-The JDBC catalog does not support [view management](sql-view-management) or
-[materialized view management](sql-materialized-view-management).
+The JDBC catalog does not support [materialized view management](sql-materialized-view-management).
 
 (iceberg-nessie-catalog)=
-
 ### Nessie catalog
 
 In order to use a Nessie catalog, configure the catalog type with
@@ -439,7 +553,7 @@ properties:
   - Description
 * - `iceberg.nessie-catalog.uri`
   - Nessie API endpoint URI (required). Example:
-    `https://localhost:19120/api/v1`
+    `https://localhost:19120/api/v2`
 * - `iceberg.nessie-catalog.ref`
   - The branch/tag to use for Nessie. Defaults to `main`.
 * - `iceberg.nessie-catalog.default-warehouse-dir`
@@ -460,20 +574,72 @@ properties:
 * - `iceberg.nessie-catalog.authentication.token`
   - The token to use with `BEARER` authentication. Example:
 `SXVLUXUhIExFQ0tFUiEK`
+* - `iceberg.nessie-catalog.client-api-version`
+  - Optional version of the Client API version to use. By default it is inferred from the `iceberg.nessie-catalog.uri` value.
+    Valid values are `V1` or `V2`.
 :::
 
 ```text
 connector.name=iceberg
 iceberg.catalog.type=nessie
-iceberg.nessie-catalog.uri=https://localhost:19120/api/v1
+iceberg.nessie-catalog.uri=https://localhost:19120/api/v2
 iceberg.nessie-catalog.default-warehouse-dir=/tmp
 ```
 
 The Nessie catalog does not support [view management](sql-view-management) or
 [materialized view management](sql-materialized-view-management).
 
-(partition-projection)=
+(iceberg-snowflake-catalog)=
+### Snowflake catalog
 
+In order to use a Snowflake catalog, configure the catalog type with
+`iceberg.catalog.type=snowflake` and provide further details with the following
+properties:
+
+:::{list-table} Snowflake catalog configuration properties
+:widths: 40, 60
+:header-rows: 1
+
+* - Property name
+  - Description
+* - `iceberg.snowflake-catalog.account-uri`
+  - Snowflake JDBC account URI (required). Example:
+    `jdbc:snowflake://example123456789.snowflakecomputing.com`
+* - `iceberg.snowflake-catalog.user`
+  - Snowflake user (required).
+* - `iceberg.snowflake-catalog.password`
+  - Snowflake password (required).
+* - `iceberg.snowflake-catalog.database`
+  - Snowflake database name (required).
+* - `iceberg.snowflake-catalog.role`
+  - Snowflake role name
+:::
+
+```text
+connector.name=iceberg
+iceberg.catalog.type=snowflake
+iceberg.snowflake-catalog.account-uri=jdbc:snowflake://example1234567890.snowflakecomputing.com
+iceberg.snowflake-catalog.user=user
+iceberg.snowflake-catalog.password=secret
+iceberg.snowflake-catalog.database=db
+```
+
+When using the Snowflake catalog, data management tasks such as creating tables,
+must be performed in Snowflake because using the catalog from external systems
+like Trino only supports `SELECT` queries and other [read operations](sql-read-operations).
+
+Additionally, the [Snowflake-created Iceberg
+tables](https://docs.snowflake.com/en/sql-reference/sql/create-iceberg-table-snowflake)
+do not expose partitioning information, which prevents efficient parallel reads
+and therefore can have significant negative performance implications.
+
+The Snowflake catalog does not support [view management](sql-view-management) or
+[materialized view management](sql-materialized-view-management).
+
+Further information is available in the [Snowflake catalog
+documentation](https://docs.snowflake.com/en/user-guide/tables-iceberg-catalog).
+
+(partition-projection)=
 ## Access tables with Athena partition projection metadata
 
 [Partition projection](https://docs.aws.amazon.com/athena/latest/ug/partition-projection.html)

@@ -4,6 +4,7 @@
 :maxdepth: 1
 
 admin/web-interface
+admin/preview-web-interface
 admin/tuning
 admin/jmx
 admin/opentelemetry
@@ -17,6 +18,7 @@ admin/graceful-shutdown
 admin/fault-tolerant-execution
 ```
 
+(admin-event-listeners)=
 ## Event listeners
 
 ```{toctree}
@@ -24,4 +26,5 @@ admin/fault-tolerant-execution
 
 admin/event-listeners-http
 admin/event-listeners-mysql
+admin/event-listeners-openlineage
 ```

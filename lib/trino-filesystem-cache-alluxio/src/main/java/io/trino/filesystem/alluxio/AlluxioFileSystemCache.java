@@ -29,8 +29,10 @@ import io.trino.filesystem.TrinoInput;
 import io.trino.filesystem.TrinoInputFile;
 import io.trino.filesystem.TrinoInputStream;
 import io.trino.filesystem.cache.TrinoFileSystemCache;
+import jakarta.annotation.PreDestroy;
 
 import java.io.IOException;
+import java.util.Collection;
 
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static java.util.Objects.requireNonNull;
@@ -71,9 +73,29 @@ public class AlluxioFileSystemCache
     }
 
     @Override
+    public long cacheLength(TrinoInputFile delegate, String key)
+            throws IOException
+    {
+        return delegate.length();
+    }
+
+    @Override
     public void expire(Location source)
             throws IOException
     {
+    }
+
+    @Override
+    public void expire(Collection<Location> locations)
+            throws IOException
+    {
+    }
+
+    @PreDestroy
+    public void shutdown()
+            throws Exception
+    {
+        cacheManager.close();
     }
 
     @VisibleForTesting

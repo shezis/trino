@@ -15,6 +15,7 @@ package io.trino.filesystem.gcs;
 
 import com.google.api.gax.paging.Page;
 import com.google.cloud.storage.Blob;
+import com.google.cloud.storage.BlobInfo;
 import com.google.cloud.storage.Storage;
 import com.google.cloud.storage.Storage.BlobListOption;
 import com.google.cloud.storage.StorageBatch;
@@ -26,6 +27,7 @@ import com.google.common.util.concurrent.ListeningExecutorService;
 import io.trino.filesystem.FileIterator;
 import io.trino.filesystem.Location;
 import io.trino.filesystem.TrinoFileSystem;
+import io.trino.filesystem.TrinoFileSystemException;
 import io.trino.filesystem.TrinoInputFile;
 import io.trino.filesystem.TrinoOutputFile;
 
@@ -39,10 +41,10 @@ import java.util.Optional;
 import java.util.OptionalLong;
 import java.util.Set;
 
-import static com.google.api.client.util.Preconditions.checkState;
 import static com.google.cloud.storage.Storage.BlobListOption.currentDirectory;
 import static com.google.cloud.storage.Storage.BlobListOption.matchGlob;
 import static com.google.cloud.storage.Storage.BlobListOption.pageSize;
+import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.collect.Iterables.partition;
 import static io.airlift.concurrent.MoreFutures.getFutureValue;
 import static io.trino.filesystem.gcs.GcsUtils.getBlob;
@@ -149,7 +151,7 @@ public class GcsFileSystem
     public void renameFile(Location source, Location target)
             throws IOException
     {
-        throw new IOException("GCS does not support renames");
+        throw new TrinoFileSystemException("GCS does not support renames");
     }
 
     @Override
@@ -240,7 +242,7 @@ public class GcsFileSystem
     public void renameDirectory(Location source, Location target)
             throws IOException
     {
-        throw new IOException("GCS does not support directory renames");
+        throw new TrinoFileSystemException("GCS does not support directory renames");
     }
 
     @Override
@@ -250,7 +252,7 @@ public class GcsFileSystem
         GcsLocation gcsLocation = new GcsLocation(normalizeToDirectory(location));
         try {
             Page<Blob> page = getPage(gcsLocation, currentDirectory(), matchGlob(gcsLocation.path() + "*/"));
-            Iterator<Blob> blobIterator = Iterators.filter(page.iterateAll().iterator(), blob -> blob.isDirectory());
+            Iterator<Blob> blobIterator = Iterators.filter(page.iterateAll().iterator(), BlobInfo::isDirectory);
             ImmutableSet.Builder<Location> locationBuilder = ImmutableSet.builder();
             while (blobIterator.hasNext()) {
                 locationBuilder.add(Location.of(gcsLocation.getBase() + blobIterator.next().getName()));

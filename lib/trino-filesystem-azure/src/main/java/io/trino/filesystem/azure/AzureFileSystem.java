@@ -22,7 +22,7 @@ import com.azure.storage.blob.BlobContainerClient;
 import com.azure.storage.blob.BlobContainerClientBuilder;
 import com.azure.storage.blob.models.BlobItem;
 import com.azure.storage.blob.models.ListBlobsOptions;
-import com.azure.storage.common.Utility;
+import com.azure.storage.blob.specialized.BlockBlobClient;
 import com.azure.storage.file.datalake.DataLakeDirectoryClient;
 import com.azure.storage.file.datalake.DataLakeFileClient;
 import com.azure.storage.file.datalake.DataLakeFileSystemClient;
@@ -38,6 +38,7 @@ import io.airlift.units.DataSize;
 import io.trino.filesystem.FileIterator;
 import io.trino.filesystem.Location;
 import io.trino.filesystem.TrinoFileSystem;
+import io.trino.filesystem.TrinoFileSystemException;
 import io.trino.filesystem.TrinoInputFile;
 import io.trino.filesystem.TrinoOutputFile;
 
@@ -63,6 +64,7 @@ public class AzureFileSystem
     private final HttpClient httpClient;
     private final TracingOptions tracingOptions;
     private final AzureAuth azureAuth;
+    private final String endpoint;
     private final int readBlockSizeBytes;
     private final long writeBlockSizeBytes;
     private final int maxWriteConcurrency;
@@ -72,6 +74,7 @@ public class AzureFileSystem
             HttpClient httpClient,
             TracingOptions tracingOptions,
             AzureAuth azureAuth,
+            String endpoint,
             DataSize readBlockSize,
             DataSize writeBlockSize,
             int maxWriteConcurrency,
@@ -80,6 +83,7 @@ public class AzureFileSystem
         this.httpClient = requireNonNull(httpClient, "httpClient is null");
         this.tracingOptions = requireNonNull(tracingOptions, "tracingOptions is null");
         this.azureAuth = requireNonNull(azureAuth, "azureAuth is null");
+        this.endpoint = requireNonNull(endpoint, "endpoint is null");
         this.readBlockSizeBytes = toIntExact(readBlockSize.toBytes());
         this.writeBlockSizeBytes = writeBlockSize.toBytes();
         checkArgument(maxWriteConcurrency >= 0, "maxWriteConcurrency is negative");
@@ -163,10 +167,10 @@ public class AzureFileSystem
             }
         }
         else {
-            DataLakeDirectoryClient directoryClient = fileSystemClient.getDirectoryClient(location.path());
+            DataLakeDirectoryClient directoryClient = createDirectoryClient(fileSystemClient, location.path());
             if (directoryClient.exists()) {
                 if (!directoryClient.getProperties().isDirectory()) {
-                    throw new IOException("Location is not a directory: " + location);
+                    throw new TrinoFileSystemException("Location is not a directory: " + location);
                 }
                 directoryClient.deleteIfExistsWithResponse(deleteRecursiveOptions, null, null);
             }
@@ -175,15 +179,10 @@ public class AzureFileSystem
 
     private void deleteBlobDirectory(AzureLocation location)
     {
-        String path = location.path();
-        if (!path.isEmpty() && !path.endsWith("/")) {
-            path += "/";
-        }
         BlobContainerClient blobContainerClient = createBlobContainerClient(location);
-        PagedIterable<BlobItem> blobItems = blobContainerClient.listBlobs(new ListBlobsOptions().setPrefix(path), null);
+        PagedIterable<BlobItem> blobItems = blobContainerClient.listBlobs(new ListBlobsOptions().setPrefix(location.directoryPath()), null);
         for (BlobItem item : blobItems) {
-            String blobUrl = Utility.urlEncode(item.getName());
-            blobContainerClient.getBlobClient(blobUrl).deleteIfExists();
+            blobContainerClient.getBlobClient(item.getName()).deleteIfExists();
         }
     }
 
@@ -197,10 +196,10 @@ public class AzureFileSystem
         AzureLocation sourceLocation = new AzureLocation(source);
         AzureLocation targetLocation = new AzureLocation(target);
         if (!sourceLocation.account().equals(targetLocation.account())) {
-            throw new IOException("Cannot rename across storage accounts");
+            throw new TrinoFileSystemException("Cannot rename across storage accounts");
         }
         if (!Objects.equals(sourceLocation.container(), targetLocation.container())) {
-            throw new IOException("Cannot rename across storage account containers");
+            throw new TrinoFileSystemException("Cannot rename across storage account containers");
         }
 
         // DFS rename file works with all storage types
@@ -212,12 +211,12 @@ public class AzureFileSystem
     {
         try {
             DataLakeFileSystemClient fileSystemClient = createFileSystemClient(source);
-            DataLakeFileClient dataLakeFileClient = fileSystemClient.getFileClient(source.path());
+            DataLakeFileClient dataLakeFileClient = createFileClient(fileSystemClient, source.path());
             if (dataLakeFileClient.getProperties().isDirectory()) {
-                throw new IOException("Rename file from %s to %s, source is a directory".formatted(source, target));
+                throw new TrinoFileSystemException("Rename file from %s to %s, source is a directory".formatted(source, target));
             }
 
-            fileSystemClient.createDirectoryIfNotExists(target.location().parentDirectory().path());
+            createDirectoryIfNotExists(fileSystemClient, target.location().parentDirectory().path());
             dataLakeFileClient.renameWithResponse(
                     null,
                     target.path(),
@@ -256,12 +255,12 @@ public class AzureFileSystem
             pathItems = fileSystemClient.listPaths(new ListPathsOptions().setRecursive(true), null);
         }
         else {
-            DataLakeDirectoryClient directoryClient = fileSystemClient.getDirectoryClient(location.path());
+            DataLakeDirectoryClient directoryClient = createDirectoryClient(fileSystemClient, location.path());
             if (!directoryClient.exists()) {
                 return FileIterator.empty();
             }
             if (!directoryClient.getProperties().isDirectory()) {
-                throw new IOException("Location is not a directory: " + location);
+                throw new TrinoFileSystemException("Location is not a directory: " + location);
             }
             pathItems = directoryClient.listPaths(true, false, null, null);
         }
@@ -274,11 +273,7 @@ public class AzureFileSystem
 
     private FileIterator listBlobFiles(AzureLocation location)
     {
-        String path = location.path();
-        if (!path.isEmpty() && !path.endsWith("/")) {
-            path += "/";
-        }
-        PagedIterable<BlobItem> blobItems = createBlobContainerClient(location).listBlobs(new ListBlobsOptions().setPrefix(path), null);
+        PagedIterable<BlobItem> blobItems = createBlobContainerClient(location).listBlobs(new ListBlobsOptions().setPrefix(location.directoryPath()), null);
         return new AzureBlobFileIterator(location, blobItems.iterator());
     }
 
@@ -299,7 +294,7 @@ public class AzureFileSystem
 
         try {
             DataLakeFileSystemClient fileSystemClient = createFileSystemClient(azureLocation);
-            DataLakeFileClient fileClient = fileSystemClient.getFileClient(azureLocation.path());
+            DataLakeFileClient fileClient = createFileClient(fileSystemClient, azureLocation.path());
             return Optional.of(fileClient.getProperties().isDirectory());
         }
         catch (DataLakeStorageException e) {
@@ -323,9 +318,9 @@ public class AzureFileSystem
         }
         try {
             DataLakeFileSystemClient fileSystemClient = createFileSystemClient(azureLocation);
-            DataLakeDirectoryClient directoryClient = fileSystemClient.createDirectoryIfNotExists(azureLocation.path());
+            DataLakeDirectoryClient directoryClient = createDirectoryIfNotExists(fileSystemClient, azureLocation.path());
             if (!directoryClient.getProperties().isDirectory()) {
-                throw new IOException("Location is not a directory: " + azureLocation);
+                throw new TrinoFileSystemException("Location is not a directory: " + azureLocation);
             }
         }
         catch (RuntimeException e) {
@@ -340,26 +335,26 @@ public class AzureFileSystem
         AzureLocation sourceLocation = new AzureLocation(source);
         AzureLocation targetLocation = new AzureLocation(target);
         if (!sourceLocation.account().equals(targetLocation.account())) {
-            throw new IOException("Cannot rename across storage accounts");
+            throw new TrinoFileSystemException("Cannot rename across storage accounts");
         }
         if (!Objects.equals(sourceLocation.container(), targetLocation.container())) {
-            throw new IOException("Cannot rename across storage account containers");
+            throw new TrinoFileSystemException("Cannot rename across storage account containers");
         }
         if (!isHierarchicalNamespaceEnabled(sourceLocation)) {
-            throw new IOException("Azure non-hierarchical does not support directory renames");
+            throw new TrinoFileSystemException("Azure non-hierarchical does not support directory renames");
         }
         if (sourceLocation.path().isEmpty() || targetLocation.path().isEmpty()) {
-            throw new IOException("Cannot rename %s to %s".formatted(source, target));
+            throw new TrinoFileSystemException("Cannot rename %s to %s".formatted(source, target));
         }
 
         try {
             DataLakeFileSystemClient fileSystemClient = createFileSystemClient(sourceLocation);
-            DataLakeDirectoryClient directoryClient = fileSystemClient.getDirectoryClient(sourceLocation.path());
+            DataLakeDirectoryClient directoryClient = createDirectoryClient(fileSystemClient, sourceLocation.path());
             if (!directoryClient.exists()) {
-                throw new IOException("Source directory does not exist: " + source);
+                throw new TrinoFileSystemException("Source directory does not exist: " + source);
             }
             if (!directoryClient.getProperties().isDirectory()) {
-                throw new IOException("Source is not a directory: " + source);
+                throw new TrinoFileSystemException("Source is not a directory: " + source);
             }
             directoryClient.rename(null, targetLocation.path());
         }
@@ -421,12 +416,12 @@ public class AzureFileSystem
             pathItems = fileSystemClient.listPaths();
         }
         else {
-            DataLakeDirectoryClient directoryClient = fileSystemClient.getDirectoryClient(location.path());
+            DataLakeDirectoryClient directoryClient = createDirectoryClient(fileSystemClient, location.path());
             if (!directoryClient.exists()) {
                 return ImmutableSet.of();
             }
             if (!directoryClient.getProperties().isDirectory()) {
-                throw new IOException("Location is not a directory: " + location);
+                throw new TrinoFileSystemException("Location is not a directory: " + location);
             }
             pathItems = directoryClient.listPaths(false, false, null, null);
         }
@@ -439,13 +434,9 @@ public class AzureFileSystem
 
     private Set<Location> listBlobDirectories(AzureLocation location)
     {
-        String path = location.path();
-        if (!path.isEmpty() && !path.endsWith("/")) {
-            path += "/";
-        }
         Location baseLocation = location.baseLocation();
         return createBlobContainerClient(location)
-                .listBlobsByHierarchy(path).stream()
+                .listBlobsByHierarchy(location.directoryPath()).stream()
                 .filter(BlobItem::isPrefix)
                 .map(item -> baseLocation.appendPath(item.getName()))
                 .collect(toImmutableSet());
@@ -455,19 +446,27 @@ public class AzureFileSystem
             throws IOException
     {
         try {
-            DataLakeFileSystemClient fileSystemClient = createFileSystemClient(location);
-            return fileSystemClient.getDirectoryClient("/").exists();
+            BlockBlobClient blockBlobClient = createBlobContainerClient(location)
+                    .getBlobClient("/")
+                    .getBlockBlobClient();
+            return blockBlobClient.exists();
         }
         catch (RuntimeException e) {
             throw new IOException("Checking whether hierarchical namespace is enabled for the location %s failed".formatted(location), e);
         }
     }
 
+    private String validatedEndpoint(AzureLocation location)
+    {
+        if (!location.endpoint().equals(endpoint)) {
+            throw new IllegalArgumentException("Location does not match configured Azure endpoint: " + location);
+        }
+        return location.endpoint();
+    }
+
     private BlobClient createBlobClient(AzureLocation location)
     {
-        // encode the path using the Azure url encoder utility
-        String path = Utility.urlEncode(location.path());
-        return createBlobContainerClient(location).getBlobClient(path);
+        return createBlobContainerClient(location).getBlobClient(location.path());
     }
 
     private BlobContainerClient createBlobContainerClient(AzureLocation location)
@@ -477,7 +476,7 @@ public class AzureFileSystem
         BlobContainerClientBuilder builder = new BlobContainerClientBuilder()
                 .httpClient(httpClient)
                 .clientOptions(new ClientOptions().setTracingOptions(tracingOptions))
-                .endpoint(String.format("https://%s.blob.core.windows.net", location.account()));
+                .endpoint("https://%s.blob.%s".formatted(location.account(), validatedEndpoint(location)));
         azureAuth.setAuth(location.account(), builder);
         location.container().ifPresent(builder::containerName);
         return builder.buildClient();
@@ -490,7 +489,7 @@ public class AzureFileSystem
         DataLakeServiceClientBuilder builder = new DataLakeServiceClientBuilder()
                 .httpClient(httpClient)
                 .clientOptions(new ClientOptions().setTracingOptions(tracingOptions))
-                .endpoint(String.format("https://%s.dfs.core.windows.net", location.account()));
+                .endpoint("https://%s.dfs.%s".formatted(location.account(), validatedEndpoint(location)));
         azureAuth.setAuth(location.account(), builder);
         DataLakeServiceClient client = builder.buildClient();
         DataLakeFileSystemClient fileSystemClient = client.getFileSystemClient(location.container().orElseThrow());
@@ -498,5 +497,20 @@ public class AzureFileSystem
             throw new IllegalArgumentException();
         }
         return fileSystemClient;
+    }
+
+    private static DataLakeDirectoryClient createDirectoryClient(DataLakeFileSystemClient fileSystemClient, String directoryName)
+    {
+        return fileSystemClient.getDirectoryClient(directoryName);
+    }
+
+    private static DataLakeFileClient createFileClient(DataLakeFileSystemClient fileSystemClient, String fileName)
+    {
+        return fileSystemClient.getFileClient(fileName);
+    }
+
+    private static DataLakeDirectoryClient createDirectoryIfNotExists(DataLakeFileSystemClient fileSystemClient, String name)
+    {
+        return fileSystemClient.createDirectoryIfNotExists(name);
     }
 }

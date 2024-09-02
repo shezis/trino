@@ -16,6 +16,7 @@ package io.trino.sql.planner;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
+import io.airlift.slice.Slices;
 import io.trino.Session;
 import io.trino.connector.MockConnectorColumnHandle;
 import io.trino.connector.MockConnectorFactory;
@@ -38,6 +39,10 @@ import io.trino.spi.expression.Variable;
 import io.trino.spi.predicate.TupleDomain;
 import io.trino.spi.type.RowType;
 import io.trino.spi.type.Type;
+import io.trino.sql.ir.Cast;
+import io.trino.sql.ir.Comparison;
+import io.trino.sql.ir.Constant;
+import io.trino.sql.ir.Reference;
 import io.trino.sql.planner.assertions.PlanAssert;
 import io.trino.sql.planner.assertions.PlanMatchPattern;
 import io.trino.testing.PlanTester;
@@ -58,6 +63,8 @@ import static io.trino.spi.type.BigintType.BIGINT;
 import static io.trino.spi.type.IntegerType.INTEGER;
 import static io.trino.spi.type.RowType.field;
 import static io.trino.spi.type.VarcharType.VARCHAR;
+import static io.trino.sql.ir.Comparison.Operator.EQUAL;
+import static io.trino.sql.ir.Comparison.Operator.GREATER_THAN;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.expression;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.filter;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.output;
@@ -142,7 +149,7 @@ public class TestTableScanRedirectionWithPushdown
                     output(
                             ImmutableList.of("DEST_COL"),
                             filter(
-                                    "DEST_COL > 0",
+                                    new Comparison(GREATER_THAN, new Reference(INTEGER, "DEST_COL"), new Constant(INTEGER, 0L)),
                                     tableScan(
                                             new MockConnectorTableHandle(DESTINATION_TABLE)::equals,
                                             TupleDomain.all(),
@@ -198,7 +205,8 @@ public class TestTableScanRedirectionWithPushdown
                     output(
                             ImmutableList.of("DEST_COL_A", "DEST_COL_B"),
                             filter(
-                                    "DEST_COL_A = 1",
+
+                                    new Comparison(EQUAL, new Reference(INTEGER, "DEST_COL_A"), new Constant(INTEGER, 1L)),
                                     tableScan(
                                             new MockConnectorTableHandle(
                                                     DESTINATION_TABLE,
@@ -253,8 +261,9 @@ public class TestTableScanRedirectionWithPushdown
                     "SELECT source_col_b FROM test_table WHERE source_col_c = 'foo'",
                     output(
                             ImmutableList.of("DEST_COL_B"),
-                            project(ImmutableMap.of("DEST_COL_B", expression("DEST_COL_B")),
-                                    filter("CAST(DEST_COL_A AS VARCHAR) = VARCHAR 'foo'",
+                            project(ImmutableMap.of("DEST_COL_B", expression(new Reference(BIGINT, "DEST_COL_B"))),
+                                    filter(
+                                            new Comparison(EQUAL, new Cast(new Reference(BIGINT, "DEST_COL_A"), VARCHAR), new Constant(VARCHAR, Slices.utf8Slice("foo"))),
                                             tableScan(
                                                     new MockConnectorTableHandle(
                                                             DESTINATION_TABLE,

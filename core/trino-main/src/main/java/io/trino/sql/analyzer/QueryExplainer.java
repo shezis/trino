@@ -15,6 +15,7 @@ package io.trino.sql.analyzer;
 
 import io.trino.Session;
 import io.trino.client.NodeVersion;
+import io.trino.cost.CachingTableStatsProvider;
 import io.trino.cost.CostCalculator;
 import io.trino.cost.StatsCalculator;
 import io.trino.execution.querystats.PlanOptimizersStatsCollector;
@@ -22,7 +23,6 @@ import io.trino.execution.warnings.WarningCollector;
 import io.trino.spi.TrinoException;
 import io.trino.sql.PlannerContext;
 import io.trino.sql.SqlFormatter;
-import io.trino.sql.planner.IrTypeAnalyzer;
 import io.trino.sql.planner.LogicalPlanner;
 import io.trino.sql.planner.Plan;
 import io.trino.sql.planner.PlanFragmenter;
@@ -76,7 +76,7 @@ public class QueryExplainer
             CostCalculator costCalculator,
             NodeVersion version)
     {
-        this.planOptimizers = requireNonNull(planOptimizersFactory.get(), "planOptimizers is null");
+        this.planOptimizers = requireNonNull(planOptimizersFactory.getPlanOptimizers(), "planOptimizers is null");
         this.planFragmenter = requireNonNull(planFragmenter, "planFragmenter is null");
         this.plannerContext = requireNonNull(plannerContext, "plannerContext is null");
         this.analyzerFactory = requireNonNull(analyzerFactory, "analyzerFactory is null");
@@ -100,7 +100,7 @@ public class QueryExplainer
         return switch (planType) {
             case LOGICAL -> {
                 Plan plan = getLogicalPlan(session, statement, parameters, warningCollector, planOptimizersStatsCollector);
-                yield PlanPrinter.textLogicalPlan(plan.getRoot(), plan.getTypes(), plannerContext.getMetadata(), plannerContext.getFunctionManager(), plan.getStatsAndCosts(), session, 0, false, Optional.of(version));
+                yield PlanPrinter.textLogicalPlan(plan.getRoot(), plannerContext.getMetadata(), plannerContext.getFunctionManager(), plan.getStatsAndCosts(), session, 0, false, Optional.of(version));
             }
             case DISTRIBUTED -> PlanPrinter.textDistributedPlan(
                     getDistributedPlan(session, statement, parameters, warningCollector, planOptimizersStatsCollector),
@@ -125,7 +125,7 @@ public class QueryExplainer
         return switch (planType) {
             case LOGICAL -> {
                 Plan plan = getLogicalPlan(session, statement, parameters, warningCollector, planOptimizersStatsCollector);
-                yield PlanPrinter.graphvizLogicalPlan(plan.getRoot(), plan.getTypes());
+                yield PlanPrinter.graphvizLogicalPlan(plan.getRoot());
             }
             case DISTRIBUTED -> PlanPrinter.graphvizDistributedPlan(getDistributedPlan(session, statement, parameters, warningCollector, planOptimizersStatsCollector));
             default -> throw new IllegalArgumentException("Unhandled plan type: " + planType);
@@ -144,7 +144,7 @@ public class QueryExplainer
             case IO -> textIoPlan(getLogicalPlan(session, statement, parameters, warningCollector, planOptimizersStatsCollector), plannerContext, session);
             case LOGICAL -> {
                 Plan plan = getLogicalPlan(session, statement, parameters, warningCollector, planOptimizersStatsCollector);
-                yield jsonLogicalPlan(plan.getRoot(), session, plan.getTypes(), plannerContext.getMetadata(), plannerContext.getFunctionManager(), plan.getStatsAndCosts());
+                yield jsonLogicalPlan(plan.getRoot(), session, plannerContext.getMetadata(), plannerContext.getFunctionManager(), plan.getStatsAndCosts());
             }
             case DISTRIBUTED -> jsonDistributedPlan(
                     getDistributedPlan(session, statement, parameters, warningCollector, planOptimizersStatsCollector),
@@ -168,11 +168,11 @@ public class QueryExplainer
                 planOptimizers,
                 idAllocator,
                 plannerContext,
-                new IrTypeAnalyzer(plannerContext),
                 statsCalculator,
                 costCalculator,
                 warningCollector,
-                planOptimizersStatsCollector);
+                planOptimizersStatsCollector,
+                new CachingTableStatsProvider(plannerContext.getMetadata(), session));
         return logicalPlanner.plan(analysis, OPTIMIZED_AND_VALIDATED, true);
     }
 

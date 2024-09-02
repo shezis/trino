@@ -20,7 +20,7 @@ To query HBase data through Phoenix, you need:
 
 - Network access from the Trino coordinator and workers to the ZooKeeper
   servers. The default port is 2181.
-- A compatible version of Phoenix: all 5.x versions starting from 5.1.0 are supported.
+- A compatible version of Phoenix: all 5.x versions starting from 5.2.0 are supported.
 
 ## Configuration
 
@@ -53,9 +53,6 @@ The following Phoenix-specific configuration properties are available:
 ```
 
 ```{include} jdbc-domain-compaction-threshold.fragment
-```
-
-```{include} jdbc-procedures.fragment
 ```
 
 ```{include} jdbc-case-insensitive-matching.fragment
@@ -98,7 +95,6 @@ If you used a different name for your catalog properties file, use
 that catalog name instead of `example` in the above examples.
 
 (phoenix-type-mapping)=
-
 ## Type mapping
 
 Because Trino and Phoenix each support types that the other does not, this
@@ -202,8 +198,6 @@ table:
   - `VARCHAR(n)`
 * - `VARBINARY`
   - `VARBINARY`
-* - `TIME`
-  - `TIME`
 * - `DATE`
   - `DATE`
 * - `ARRAY`
@@ -267,7 +261,6 @@ Use them in the same way as above: in the `WITH` clause of the `CREATE TABLE` st
 | `bloomfilter`         | `NONE`        | Bloomfilter to use. Valid values are `NONE` (default), `ROW`, or `ROWCOL`.                                             |
 
 (phoenix-sql-support)=
-
 ## SQL support
 
 The connector provides read and write access to data and metadata in
@@ -276,6 +269,7 @@ Phoenix. In addition to the {ref}`globally available
 statements, the connector supports the following features:
 
 - {doc}`/sql/insert`
+- {doc}`/sql/update`
 - {doc}`/sql/delete`
 - {doc}`/sql/merge`
 - {doc}`/sql/create-table`
@@ -285,4 +279,9 @@ statements, the connector supports the following features:
 - {doc}`/sql/drop-schema`
 
 ```{include} sql-delete-limitation.fragment
+```
+
+### Procedures
+
+```{include} procedures-execute.fragment
 ```

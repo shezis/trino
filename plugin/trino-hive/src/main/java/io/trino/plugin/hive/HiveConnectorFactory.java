@@ -17,7 +17,6 @@ import com.google.inject.Injector;
 import com.google.inject.Key;
 import com.google.inject.Module;
 import com.google.inject.Scopes;
-import com.google.inject.TypeLiteral;
 import io.airlift.bootstrap.Bootstrap;
 import io.airlift.bootstrap.LifeCycleManager;
 import io.airlift.event.client.EventModule;
@@ -26,7 +25,7 @@ import io.opentelemetry.api.OpenTelemetry;
 import io.opentelemetry.api.trace.Tracer;
 import io.trino.filesystem.TrinoFileSystemFactory;
 import io.trino.filesystem.manager.FileSystemModule;
-import io.trino.plugin.base.CatalogName;
+import io.trino.metastore.HiveMetastore;
 import io.trino.plugin.base.CatalogNameModule;
 import io.trino.plugin.base.TypeDeserializerModule;
 import io.trino.plugin.base.classloader.ClassLoaderSafeConnectorAccessControl;
@@ -37,7 +36,6 @@ import io.trino.plugin.base.classloader.ClassLoaderSafeNodePartitioningProvider;
 import io.trino.plugin.base.jmx.ConnectorObjectNameGeneratorModule;
 import io.trino.plugin.base.jmx.MBeanServerModule;
 import io.trino.plugin.base.session.SessionPropertiesProvider;
-import io.trino.plugin.hive.metastore.HiveMetastore;
 import io.trino.plugin.hive.metastore.HiveMetastoreModule;
 import io.trino.plugin.hive.procedure.HiveProcedureModule;
 import io.trino.plugin.hive.security.HiveSecurityModule;
@@ -46,6 +44,7 @@ import io.trino.spi.NodeManager;
 import io.trino.spi.PageIndexerFactory;
 import io.trino.spi.PageSorter;
 import io.trino.spi.VersionEmbedder;
+import io.trino.spi.catalog.CatalogName;
 import io.trino.spi.classloader.ThreadContextClassLoader;
 import io.trino.spi.connector.Connector;
 import io.trino.spi.connector.ConnectorAccessControl;
@@ -94,7 +93,7 @@ public class HiveConnectorFactory
             Optional<TrinoFileSystemFactory> fileSystemFactory)
     {
         ClassLoader classLoader = HiveConnectorFactory.class.getClassLoader();
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
             Bootstrap app = new Bootstrap(
                     new CatalogNameModule(catalogName),
                     new EventModule(),
@@ -107,7 +106,7 @@ public class HiveConnectorFactory
                     new HiveSecurityModule(),
                     fileSystemFactory
                             .map(factory -> (Module) binder -> binder.bind(TrinoFileSystemFactory.class).toInstance(factory))
-                            .orElseGet(() -> new FileSystemModule(catalogName, context.getNodeManager(), context.getOpenTelemetry())),
+                            .orElseGet(() -> new FileSystemModule(catalogName, context.getNodeManager(), context.getOpenTelemetry(), false)),
                     new HiveProcedureModule(),
                     new MBeanServerModule(),
                     binder -> {
@@ -135,15 +134,16 @@ public class HiveConnectorFactory
             ConnectorPageSourceProvider connectorPageSource = injector.getInstance(ConnectorPageSourceProvider.class);
             ConnectorPageSinkProvider pageSinkProvider = injector.getInstance(ConnectorPageSinkProvider.class);
             ConnectorNodePartitioningProvider connectorDistributionProvider = injector.getInstance(ConnectorNodePartitioningProvider.class);
-            Set<SessionPropertiesProvider> sessionPropertiesProviders = injector.getInstance(Key.get(new TypeLiteral<>() {}));
+            Set<SessionPropertiesProvider> sessionPropertiesProviders = injector.getInstance(new Key<>() {});
             HiveTableProperties hiveTableProperties = injector.getInstance(HiveTableProperties.class);
+            HiveViewProperties hiveViewProperties = injector.getInstance(HiveViewProperties.class);
             HiveColumnProperties hiveColumnProperties = injector.getInstance(HiveColumnProperties.class);
             HiveAnalyzeProperties hiveAnalyzeProperties = injector.getInstance(HiveAnalyzeProperties.class);
             HiveMaterializedViewPropertiesProvider hiveMaterializedViewPropertiesProvider = injector.getInstance(HiveMaterializedViewPropertiesProvider.class);
-            Set<Procedure> procedures = injector.getInstance(Key.get(new TypeLiteral<>() {}));
-            Set<TableProcedureMetadata> tableProcedures = injector.getInstance(Key.get(new TypeLiteral<>() {}));
-            Set<SystemTableProvider> systemTableProviders = injector.getInstance(Key.get(new TypeLiteral<>() {}));
-            Optional<ConnectorAccessControl> hiveAccessControl = injector.getInstance(Key.get(new TypeLiteral<Optional<ConnectorAccessControl>>() {}))
+            Set<Procedure> procedures = injector.getInstance(new Key<>() {});
+            Set<TableProcedureMetadata> tableProcedures = injector.getInstance(new Key<>() {});
+            Set<SystemTableProvider> systemTableProviders = injector.getInstance(new Key<>() {});
+            Optional<ConnectorAccessControl> hiveAccessControl = injector.getInstance(new Key<Optional<ConnectorAccessControl>>() {})
                     .map(accessControl -> new SystemTableAwareAccessControl(accessControl, systemTableProviders))
                     .map(accessControl -> new ClassLoaderSafeConnectorAccessControl(accessControl, classLoader));
 
@@ -160,11 +160,12 @@ public class HiveConnectorFactory
                     sessionPropertiesProviders,
                     HiveSchemaProperties.SCHEMA_PROPERTIES,
                     hiveTableProperties.getTableProperties(),
+                    hiveViewProperties.getViewProperties(),
                     hiveColumnProperties.getColumnProperties(),
                     hiveAnalyzeProperties.getAnalyzeProperties(),
                     hiveMaterializedViewPropertiesProvider.getMaterializedViewProperties(),
                     hiveAccessControl,
-                    injector.getInstance(Key.get(new TypeLiteral<>() {})),
+                    injector.getInstance(new Key<>() {}),
                     injector.getInstance(FunctionProvider.class),
                     injector.getInstance(HiveConfig.class).isSingleStatementWritesOnly(),
                     classLoader);

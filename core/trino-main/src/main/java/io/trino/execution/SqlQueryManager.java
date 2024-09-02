@@ -31,6 +31,7 @@ import io.trino.execution.QueryExecution.QueryOutputInfo;
 import io.trino.execution.StateMachine.StateChangeListener;
 import io.trino.memory.ClusterMemoryManager;
 import io.trino.server.BasicQueryInfo;
+import io.trino.server.ResultQueryInfo;
 import io.trino.server.protocol.Slug;
 import io.trino.spi.QueryId;
 import io.trino.spi.TrinoException;
@@ -144,7 +145,7 @@ public class SqlQueryManager
                     try {
                         return queryExecution.getBasicQueryInfo();
                     }
-                    catch (RuntimeException ignored) {
+                    catch (RuntimeException _) {
                         return null;
                     }
                 })
@@ -199,6 +200,13 @@ public class SqlQueryManager
             throws NoSuchElementException
     {
         return queryTracker.getQuery(queryId).getQueryInfo();
+    }
+
+    @Override
+    public ResultQueryInfo getResultQueryInfo(QueryId queryId)
+            throws NoSuchElementException
+    {
+        return queryTracker.getQuery(queryId).getResultQueryInfo();
     }
 
     @Override
@@ -257,7 +265,7 @@ public class SqlQueryManager
             queryTracker.expireQuery(queryExecution.getQueryId());
         });
 
-        try (SetThreadName ignored = new SetThreadName("Query-%s", queryExecution.getQueryId())) {
+        try (SetThreadName _ = new SetThreadName("Query-%s", queryExecution.getQueryId())) {
             try (var ignoredStartScope = scopedSpan(tracer.spanBuilder("query-start")
                     .setParent(Context.current().with(queryExecution.getSession().getQuerySpan()))
                     .startSpan())) {
@@ -307,6 +315,13 @@ public class SqlQueryManager
     public ThreadPoolExecutorMBean getManagementExecutor()
     {
         return queryManagementExecutorMBean;
+    }
+
+    @Managed
+    @Nested
+    public QueryTracker<QueryExecution> getQueryTracker()
+    {
+        return queryTracker;
     }
 
     /**

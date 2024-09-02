@@ -26,26 +26,26 @@ import io.trino.client.ProtocolHeaders;
 import io.trino.exchange.ExchangeManagerRegistry;
 import io.trino.execution.QueryManager;
 import io.trino.operator.DirectExchangeClientSupplier;
+import io.trino.server.DisconnectionAwareAsyncResponse;
+import io.trino.server.ExternalUriInfo;
 import io.trino.server.ForStatementResource;
 import io.trino.server.ServerConfig;
 import io.trino.server.security.ResourceSecurity;
 import io.trino.spi.QueryId;
 import io.trino.spi.block.BlockEncodingSerde;
 import jakarta.annotation.PreDestroy;
+import jakarta.ws.rs.BeanParam;
 import jakarta.ws.rs.DELETE;
 import jakarta.ws.rs.GET;
+import jakarta.ws.rs.NotFoundException;
 import jakarta.ws.rs.Path;
 import jakarta.ws.rs.PathParam;
 import jakarta.ws.rs.Produces;
 import jakarta.ws.rs.QueryParam;
-import jakarta.ws.rs.WebApplicationException;
-import jakarta.ws.rs.container.AsyncResponse;
 import jakarta.ws.rs.container.Suspended;
-import jakarta.ws.rs.core.Context;
 import jakarta.ws.rs.core.MediaType;
 import jakarta.ws.rs.core.Response;
 import jakarta.ws.rs.core.Response.ResponseBuilder;
-import jakarta.ws.rs.core.UriInfo;
 
 import java.net.URLEncoder;
 import java.util.Map.Entry;
@@ -56,12 +56,10 @@ import java.util.concurrent.ScheduledExecutorService;
 
 import static com.google.common.util.concurrent.MoreExecutors.directExecutor;
 import static io.airlift.concurrent.Threads.threadsNamed;
-import static io.airlift.jaxrs.AsyncResponseHandler.bindAsyncResponse;
 import static io.airlift.units.DataSize.Unit.MEGABYTE;
+import static io.trino.server.DisconnectionAwareAsyncResponse.bindDisconnectionAwareAsyncResponse;
 import static io.trino.server.protocol.Slug.Context.EXECUTING_QUERY;
 import static io.trino.server.security.ResourceSecurity.AccessType.PUBLIC;
-import static jakarta.ws.rs.core.MediaType.TEXT_PLAIN_TYPE;
-import static jakarta.ws.rs.core.Response.Status.NOT_FOUND;
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static java.util.Objects.requireNonNull;
 import static java.util.concurrent.Executors.newSingleThreadScheduledExecutor;
@@ -160,11 +158,11 @@ public class ExecutingStatementResource
             @PathParam("token") long token,
             @QueryParam("maxWait") Duration maxWait,
             @QueryParam("targetResultSize") DataSize targetResultSize,
-            @Context UriInfo uriInfo,
-            @Suspended AsyncResponse asyncResponse)
+            @BeanParam ExternalUriInfo externalUriInfo,
+            @Suspended @BeanParam DisconnectionAwareAsyncResponse asyncResponse)
     {
         Query query = getQuery(queryId, slug, token);
-        asyncQueryResults(query, token, maxWait, targetResultSize, uriInfo, asyncResponse);
+        asyncQueryResults(query, token, maxWait, targetResultSize, externalUriInfo, asyncResponse);
     }
 
     protected Query getQuery(QueryId queryId, String slug, long token)
@@ -172,7 +170,7 @@ public class ExecutingStatementResource
         Query query = queries.get(queryId);
         if (query != null) {
             if (!query.isSlugValid(slug, token)) {
-                throw queryNotFound();
+                throw new NotFoundException("Query not found");
             }
             return query;
         }
@@ -184,11 +182,11 @@ public class ExecutingStatementResource
             session = queryManager.getQuerySession(queryId);
             querySlug = queryManager.getQuerySlug(queryId);
             if (!querySlug.isValid(EXECUTING_QUERY, slug, token)) {
-                throw queryNotFound();
+                throw new NotFoundException("Query not found");
             }
         }
         catch (NoSuchElementException e) {
-            throw queryNotFound();
+            throw new NotFoundException("Query not found");
         }
 
         query = queries.computeIfAbsent(queryId, id -> Query.create(
@@ -209,8 +207,8 @@ public class ExecutingStatementResource
             long token,
             Duration maxWait,
             DataSize targetResultSize,
-            UriInfo uriInfo,
-            AsyncResponse asyncResponse)
+            ExternalUriInfo externalUriInfo,
+            DisconnectionAwareAsyncResponse asyncResponse)
     {
         Duration wait = WAIT_ORDERING.min(MAX_WAIT_TIME, maxWait);
         if (targetResultSize == null) {
@@ -219,11 +217,11 @@ public class ExecutingStatementResource
         else {
             targetResultSize = Ordering.natural().min(targetResultSize, MAX_TARGET_RESULT_SIZE);
         }
-        ListenableFuture<QueryResultsResponse> queryResultsFuture = query.waitForResults(token, uriInfo, wait, targetResultSize);
+        ListenableFuture<QueryResultsResponse> queryResultsFuture = query.waitForResults(token, externalUriInfo, wait, targetResultSize);
 
         ListenableFuture<Response> response = Futures.transform(queryResultsFuture, this::toResponse, directExecutor());
 
-        bindAsyncResponse(asyncResponse, response, responseExecutor);
+        bindDisconnectionAwareAsyncResponse(asyncResponse, response, responseExecutor);
     }
 
     private Response toResponse(QueryResultsResponse resultsResponse)
@@ -291,7 +289,7 @@ public class ExecutingStatementResource
         Query query = queries.get(queryId);
         if (query != null) {
             if (!query.isSlugValid(slug, token)) {
-                throw queryNotFound();
+                throw new NotFoundException("Query not found");
             }
             query.cancel();
             return Response.noContent().build();
@@ -300,13 +298,13 @@ public class ExecutingStatementResource
         // cancel the query execution directly instead of creating the statement client
         try {
             if (!queryManager.getQuerySlug(queryId).isValid(EXECUTING_QUERY, slug, token)) {
-                throw queryNotFound();
+                throw new NotFoundException("Query not found");
             }
             queryManager.cancelQuery(queryId);
             return Response.noContent().build();
         }
         catch (NoSuchElementException e) {
-            throw queryNotFound();
+            throw new NotFoundException("Query not found");
         }
     }
 
@@ -321,15 +319,6 @@ public class ExecutingStatementResource
     {
         Query query = getQuery(queryId, slug, token);
         query.partialCancel(stage);
-    }
-
-    private static WebApplicationException queryNotFound()
-    {
-        throw new WebApplicationException(
-                Response.status(NOT_FOUND)
-                        .type(TEXT_PLAIN_TYPE)
-                        .entity("Query not found")
-                        .build());
     }
 
     private static String urlEncode(String value)

@@ -14,12 +14,12 @@
 package io.trino.plugin.hive.line;
 
 import io.trino.filesystem.Location;
+import io.trino.metastore.StorageFormat;
 import io.trino.plugin.hive.FileWriter;
 import io.trino.plugin.hive.HiveCompressionCodec;
 import io.trino.plugin.hive.HiveFileWriterFactory;
 import io.trino.plugin.hive.WriterKind;
 import io.trino.plugin.hive.acid.AcidTransaction;
-import io.trino.plugin.hive.metastore.StorageFormat;
 import io.trino.spi.TrinoException;
 import io.trino.spi.connector.ConnectorSession;
 
@@ -28,8 +28,8 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.OptionalInt;
 
+import static io.trino.hive.formats.HiveClassNames.REGEX_SERDE_CLASS;
 import static io.trino.plugin.hive.HiveErrorCode.HIVE_WRITER_OPEN_ERROR;
-import static io.trino.plugin.hive.util.HiveClassNames.REGEX_SERDE_CLASS;
 
 public class RegexFileWriterFactory
         implements HiveFileWriterFactory

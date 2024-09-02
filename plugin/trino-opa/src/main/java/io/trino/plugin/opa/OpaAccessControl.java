@@ -17,11 +17,13 @@ import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.ImmutableSetMultimap;
 import com.google.common.collect.Multimaps;
 import com.google.inject.Inject;
+import io.airlift.bootstrap.LifeCycleManager;
 import io.trino.plugin.opa.schema.OpaPluginContext;
 import io.trino.plugin.opa.schema.OpaQueryContext;
 import io.trino.plugin.opa.schema.OpaQueryInput;
 import io.trino.plugin.opa.schema.OpaQueryInputAction;
 import io.trino.plugin.opa.schema.OpaQueryInputResource;
+import io.trino.plugin.opa.schema.OpaViewExpression;
 import io.trino.plugin.opa.schema.TrinoCatalogSessionProperty;
 import io.trino.plugin.opa.schema.TrinoFunction;
 import io.trino.plugin.opa.schema.TrinoGrantPrincipal;
@@ -32,6 +34,7 @@ import io.trino.plugin.opa.schema.TrinoUser;
 import io.trino.spi.connector.CatalogSchemaName;
 import io.trino.spi.connector.CatalogSchemaRoutineName;
 import io.trino.spi.connector.CatalogSchemaTableName;
+import io.trino.spi.connector.ColumnSchema;
 import io.trino.spi.connector.SchemaTableName;
 import io.trino.spi.function.SchemaFunctionName;
 import io.trino.spi.security.AccessDeniedException;
@@ -40,15 +43,18 @@ import io.trino.spi.security.Privilege;
 import io.trino.spi.security.SystemAccessControl;
 import io.trino.spi.security.SystemSecurityContext;
 import io.trino.spi.security.TrinoPrincipal;
+import io.trino.spi.security.ViewExpression;
 
 import java.security.Principal;
 import java.util.Collection;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.function.BiConsumer;
 import java.util.function.Consumer;
 
+import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.collect.ImmutableMap.toImmutableMap;
 import static com.google.common.collect.Iterables.getOnlyElement;
 import static io.trino.plugin.opa.OpaHighLevelClient.buildQueryInputForSimpleResource;
@@ -80,13 +86,15 @@ public sealed class OpaAccessControl
         implements SystemAccessControl
         permits OpaBatchAccessControl
 {
+    private final LifeCycleManager lifeCycleManager;
     private final OpaHighLevelClient opaHighLevelClient;
     private final boolean allowPermissionManagementOperations;
     private final OpaPluginContext pluginContext;
 
     @Inject
-    public OpaAccessControl(OpaHighLevelClient opaHighLevelClient, OpaConfig config, OpaPluginContext pluginContext)
+    public OpaAccessControl(LifeCycleManager lifeCycleManager, OpaHighLevelClient opaHighLevelClient, OpaConfig config, OpaPluginContext pluginContext)
     {
+        this.lifeCycleManager = requireNonNull(lifeCycleManager, "lifeCycleManager is null");
         this.opaHighLevelClient = requireNonNull(opaHighLevelClient, "opaHighLevelClient is null");
         this.allowPermissionManagementOperations = config.getAllowPermissionManagementOperations();
         this.pluginContext = requireNonNull(pluginContext, "pluginContext is null");
@@ -707,6 +715,40 @@ public sealed class OpaAccessControl
                 "DropFunction",
                 () -> denyDropFunction(functionName.toString()),
                 OpaQueryInputResource.builder().function(TrinoFunction.fromTrinoFunction(functionName)).build());
+    }
+
+    @Override
+    public void checkCanShowCreateFunction(SystemSecurityContext systemSecurityContext, CatalogSchemaRoutineName functionName)
+    {
+        opaHighLevelClient.queryAndEnforce(
+                buildQueryContext(systemSecurityContext),
+                "ShowCreateFunction",
+                () -> denyShowFunctions(functionName.toString()),
+                OpaQueryInputResource.builder().function(TrinoFunction.fromTrinoFunction(functionName)).build());
+    }
+
+    @Override
+    public List<ViewExpression> getRowFilters(SystemSecurityContext context, CatalogSchemaTableName tableName)
+    {
+        List<OpaViewExpression> rowFilterExpressions = opaHighLevelClient.getRowFilterExpressionsFromOpa(buildQueryContext(context), tableName);
+        return rowFilterExpressions.stream()
+                .map(expression -> expression.toTrinoViewExpression(tableName.getCatalogName(), tableName.getSchemaTableName().getSchemaName()))
+                .collect(toImmutableList());
+    }
+
+    @Override
+    public Map<ColumnSchema, ViewExpression> getColumnMasks(SystemSecurityContext context, CatalogSchemaTableName tableName, List<ColumnSchema> columns)
+    {
+        return opaHighLevelClient.getColumnMasksFromOpa(buildQueryContext(context), tableName, columns)
+                .entrySet().stream()
+                .map(entry -> Map.entry(entry.getKey(), entry.getValue().toTrinoViewExpression(tableName.getCatalogName(), tableName.getSchemaTableName().getSchemaName())))
+                .collect(toImmutableMap(Map.Entry::getKey, Map.Entry::getValue));
+    }
+
+    @Override
+    public void shutdown()
+    {
+        lifeCycleManager.stop();
     }
 
     private void checkTableOperation(SystemSecurityContext context, String actionName, CatalogSchemaTableName table, Consumer<String> deny)

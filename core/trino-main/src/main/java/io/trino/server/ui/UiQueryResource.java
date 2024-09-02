@@ -20,6 +20,8 @@ import io.trino.execution.QueryInfo;
 import io.trino.execution.QueryState;
 import io.trino.security.AccessControl;
 import io.trino.server.BasicQueryInfo;
+import io.trino.server.DisableHttpCache;
+import io.trino.server.GoneException;
 import io.trino.server.HttpRequestSessionContextFactory;
 import io.trino.server.security.ResourceSecurity;
 import io.trino.spi.QueryId;
@@ -51,6 +53,7 @@ import static io.trino.server.security.ResourceSecurity.AccessType.WEB_UI;
 import static java.util.Objects.requireNonNull;
 
 @Path("/ui/api/query")
+@DisableHttpCache
 public class UiQueryResource
 {
     private final DispatchManager dispatchManager;
@@ -100,7 +103,7 @@ public class UiQueryResource
                 throw new ForbiddenException();
             }
         }
-        return Response.status(Status.GONE).build();
+        throw new GoneException();
     }
 
     @ResourceSecurity(WEB_UI)
@@ -141,7 +144,7 @@ public class UiQueryResource
             throw new ForbiddenException();
         }
         catch (NoSuchElementException e) {
-            return Response.status(Status.GONE).build();
+            throw new GoneException();
         }
     }
 }

@@ -28,9 +28,9 @@ public class NessieContainer
 {
     private static final Logger log = Logger.get(NessieContainer.class);
 
-    public static final String DEFAULT_IMAGE = "projectnessie/nessie:0.71.1";
+    public static final String DEFAULT_IMAGE = "ghcr.io/projectnessie/nessie:0.95.0";
     public static final String DEFAULT_HOST_NAME = "nessie";
-    public static final String VERSION_STORE_TYPE = "INMEMORY";
+    public static final String VERSION_STORE_TYPE = "IN_MEMORY";
 
     public static final int PORT = 19121;
 
@@ -64,7 +64,7 @@ public class NessieContainer
 
     public String getRestApiUri()
     {
-        return "http://" + getMappedHostAndPortForExposedPort(PORT) + "/api/v1";
+        return "http://" + getMappedHostAndPortForExposedPort(PORT) + "/api/v2";
     }
 
     public static class Builder

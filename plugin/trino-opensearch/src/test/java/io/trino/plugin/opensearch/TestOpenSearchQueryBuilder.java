@@ -15,6 +15,7 @@ package io.trino.plugin.opensearch;
 
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
+import io.trino.plugin.opensearch.client.IndexMetadata;
 import io.trino.plugin.opensearch.decoders.DoubleDecoder;
 import io.trino.plugin.opensearch.decoders.IntegerDecoder;
 import io.trino.plugin.opensearch.decoders.VarcharDecoder;
@@ -40,10 +41,10 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 public class TestOpenSearchQueryBuilder
 {
-    private static final OpenSearchColumnHandle NAME = new OpenSearchColumnHandle("name", VARCHAR, new VarcharDecoder.Descriptor("name"), true);
-    private static final OpenSearchColumnHandle AGE = new OpenSearchColumnHandle("age", INTEGER, new IntegerDecoder.Descriptor("age"), true);
-    private static final OpenSearchColumnHandle SCORE = new OpenSearchColumnHandle("score", DOUBLE, new DoubleDecoder.Descriptor("score"), true);
-    private static final OpenSearchColumnHandle LENGTH = new OpenSearchColumnHandle("length", DOUBLE, new DoubleDecoder.Descriptor("length"), true);
+    private static final OpenSearchColumnHandle NAME = new OpenSearchColumnHandle(ImmutableList.of("name"), VARCHAR, new IndexMetadata.PrimitiveType("text"), new VarcharDecoder.Descriptor("name"), true);
+    private static final OpenSearchColumnHandle AGE = new OpenSearchColumnHandle(ImmutableList.of("age"), INTEGER, new IndexMetadata.PrimitiveType("int"), new IntegerDecoder.Descriptor("age"), true);
+    private static final OpenSearchColumnHandle SCORE = new OpenSearchColumnHandle(ImmutableList.of("score"), DOUBLE, new IndexMetadata.PrimitiveType("double"), new DoubleDecoder.Descriptor("score"), true);
+    private static final OpenSearchColumnHandle LENGTH = new OpenSearchColumnHandle(ImmutableList.of("length"), DOUBLE, new IndexMetadata.PrimitiveType("double"), new DoubleDecoder.Descriptor("length"), true);
 
     @Test
     public void testMatchAll()
@@ -59,20 +60,20 @@ public class TestOpenSearchQueryBuilder
         // SingleValue
         assertQueryBuilder(
                 ImmutableMap.of(AGE, Domain.singleValue(INTEGER, 1L)),
-                new BoolQueryBuilder().filter(new TermQueryBuilder(AGE.getName(), 1L)));
+                new BoolQueryBuilder().filter(new TermQueryBuilder(AGE.name(), 1L)));
 
         // Range
         assertQueryBuilder(
                 ImmutableMap.of(SCORE, Domain.create(ValueSet.ofRanges(Range.range(DOUBLE, 65.0, false, 80.0, true)), false)),
-                new BoolQueryBuilder().filter(new RangeQueryBuilder(SCORE.getName()).gt(65.0).lte(80.0)));
+                new BoolQueryBuilder().filter(new RangeQueryBuilder(SCORE.name()).gt(65.0).lte(80.0)));
 
         // List
         assertQueryBuilder(
                 ImmutableMap.of(NAME, Domain.multipleValues(VARCHAR, ImmutableList.of("alice", "bob"))),
                 new BoolQueryBuilder().filter(
                         new BoolQueryBuilder()
-                                .should(new TermQueryBuilder(NAME.getName(), "alice"))
-                                .should(new TermQueryBuilder(NAME.getName(), "bob"))));
+                                .should(new TermQueryBuilder(NAME.name(), "alice"))
+                                .should(new TermQueryBuilder(NAME.name(), "bob"))));
         // all
         assertQueryBuilder(
                 ImmutableMap.of(AGE, Domain.all(INTEGER)),
@@ -81,20 +82,20 @@ public class TestOpenSearchQueryBuilder
         // notNull
         assertQueryBuilder(
                 ImmutableMap.of(AGE, Domain.notNull(INTEGER)),
-                new BoolQueryBuilder().filter(new ExistsQueryBuilder(AGE.getName())));
+                new BoolQueryBuilder().filter(new ExistsQueryBuilder(AGE.name())));
 
         // isNull
         assertQueryBuilder(
                 ImmutableMap.of(AGE, Domain.onlyNull(INTEGER)),
-                new BoolQueryBuilder().mustNot(new ExistsQueryBuilder(AGE.getName())));
+                new BoolQueryBuilder().mustNot(new ExistsQueryBuilder(AGE.name())));
 
         // isNullAllowed
         assertQueryBuilder(
                 ImmutableMap.of(AGE, Domain.singleValue(INTEGER, 1L, true)),
                 new BoolQueryBuilder().filter(
                         new BoolQueryBuilder()
-                                .should(new TermQueryBuilder(AGE.getName(), 1L))
-                                .should(new BoolQueryBuilder().mustNot(new ExistsQueryBuilder(AGE.getName())))));
+                                .should(new TermQueryBuilder(AGE.name(), 1L))
+                                .should(new BoolQueryBuilder().mustNot(new ExistsQueryBuilder(AGE.name())))));
     }
 
     @Test
@@ -105,8 +106,8 @@ public class TestOpenSearchQueryBuilder
                         AGE, Domain.singleValue(INTEGER, 1L),
                         SCORE, Domain.create(ValueSet.ofRanges(Range.range(DOUBLE, 65.0, false, 80.0, true)), false)),
                 new BoolQueryBuilder()
-                        .filter(new TermQueryBuilder(AGE.getName(), 1L))
-                        .filter(new RangeQueryBuilder(SCORE.getName()).gt(65.0).lte(80.0)));
+                        .filter(new TermQueryBuilder(AGE.name(), 1L))
+                        .filter(new RangeQueryBuilder(SCORE.name()).gt(65.0).lte(80.0)));
 
         assertQueryBuilder(
                 ImmutableMap.of(
@@ -115,18 +116,18 @@ public class TestOpenSearchQueryBuilder
                                 Range.range(DOUBLE, 65.0, false, 80.0, true),
                                 Range.equal(DOUBLE, 90.0)), false)),
                 new BoolQueryBuilder()
-                        .filter(new RangeQueryBuilder(LENGTH.getName()).gte(160.0).lte(180.0))
+                        .filter(new RangeQueryBuilder(LENGTH.name()).gte(160.0).lte(180.0))
                         .filter(new BoolQueryBuilder()
-                                .should(new RangeQueryBuilder(SCORE.getName()).gt(65.0).lte(80.0))
-                                .should(new TermQueryBuilder(SCORE.getName(), 90.0))));
+                                .should(new RangeQueryBuilder(SCORE.name()).gt(65.0).lte(80.0))
+                                .should(new TermQueryBuilder(SCORE.name(), 90.0))));
 
         assertQueryBuilder(
                 ImmutableMap.of(
                         AGE, Domain.singleValue(INTEGER, 10L),
                         SCORE, Domain.onlyNull(DOUBLE)),
                 new BoolQueryBuilder()
-                        .filter(new TermQueryBuilder(AGE.getName(), 10L))
-                        .mustNot(new ExistsQueryBuilder(SCORE.getName())));
+                        .filter(new TermQueryBuilder(AGE.name(), 10L))
+                        .mustNot(new ExistsQueryBuilder(SCORE.name())));
     }
 
     private static void assertQueryBuilder(Map<OpenSearchColumnHandle, Domain> domains, QueryBuilder expected)

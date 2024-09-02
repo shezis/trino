@@ -18,24 +18,21 @@ import io.trino.hive.thrift.metastore.Database;
 import io.trino.hive.thrift.metastore.FieldSchema;
 import io.trino.hive.thrift.metastore.Partition;
 import io.trino.hive.thrift.metastore.Table;
-import io.trino.plugin.hive.HiveColumnStatisticType;
-import io.trino.plugin.hive.HivePartition;
-import io.trino.plugin.hive.PartitionStatistics;
-import io.trino.plugin.hive.acid.AcidOperation;
-import io.trino.plugin.hive.acid.AcidTransaction;
-import io.trino.plugin.hive.metastore.AcidTransactionOwner;
-import io.trino.plugin.hive.metastore.HiveColumnStatistics;
-import io.trino.plugin.hive.metastore.HivePrincipal;
-import io.trino.plugin.hive.metastore.HivePrivilegeInfo;
-import io.trino.plugin.hive.metastore.HivePrivilegeInfo.HivePrivilege;
-import io.trino.plugin.hive.metastore.PartitionWithStatistics;
-import io.trino.plugin.hive.metastore.StatisticsUpdateMode;
+import io.trino.hive.thrift.metastore.TableMeta;
+import io.trino.metastore.AcidTransactionOwner;
+import io.trino.metastore.HiveColumnStatistics;
+import io.trino.metastore.HivePartition;
+import io.trino.metastore.HivePrincipal;
+import io.trino.metastore.HivePrivilegeInfo;
+import io.trino.metastore.HivePrivilegeInfo.HivePrivilege;
+import io.trino.metastore.PartitionStatistics;
+import io.trino.metastore.PartitionWithStatistics;
+import io.trino.metastore.StatisticsUpdateMode;
 import io.trino.spi.TrinoException;
 import io.trino.spi.connector.SchemaTableName;
 import io.trino.spi.connector.TableNotFoundException;
 import io.trino.spi.predicate.TupleDomain;
 import io.trino.spi.security.RoleGrant;
-import io.trino.spi.type.Type;
 
 import java.util.Collection;
 import java.util.List;
@@ -66,15 +63,7 @@ public sealed interface ThriftMetastore
 
     List<String> getAllDatabases();
 
-    List<String> getAllTables(String databaseName);
-
-    Optional<List<SchemaTableName>> getAllTables();
-
-    List<String> getTablesWithParameter(String databaseName, String parameterKey, String parameterValue);
-
-    List<String> getAllViews(String databaseName);
-
-    Optional<List<SchemaTableName>> getAllViews();
+    List<TableMeta> getTables(String databaseName);
 
     Optional<Database> getDatabase(String databaseName);
 
@@ -92,15 +81,13 @@ public sealed interface ThriftMetastore
 
     Optional<Table> getTable(String databaseName, String tableName);
 
-    Set<HiveColumnStatisticType> getSupportedColumnStatistics(Type type);
-
     Map<String, HiveColumnStatistics> getTableColumnStatistics(String databaseName, String tableName, Set<String> columnNames);
 
     Map<String, Map<String, HiveColumnStatistics>> getPartitionColumnStatistics(String databaseName, String tableName, Set<String> partitionNames, Set<String> columnNames);
 
     boolean useSparkTableStatistics();
 
-    void updateTableStatistics(String databaseName, String tableName, AcidTransaction transaction, StatisticsUpdateMode mode, PartitionStatistics statisticsUpdate);
+    void updateTableStatistics(String databaseName, String tableName, OptionalLong acidWriteId, StatisticsUpdateMode mode, PartitionStatistics statisticsUpdate);
 
     void updatePartitionStatistics(Table table, String partitionName, StatisticsUpdateMode mode, PartitionStatistics statisticsUpdate);
 
@@ -218,7 +205,7 @@ public sealed interface ThriftMetastore
         throw new UnsupportedOperationException();
     }
 
-    default void addDynamicPartitions(String dbName, String tableName, List<String> partitionNames, long transactionId, long writeId, AcidOperation operation)
+    default void addDynamicPartitions(String dbName, String tableName, List<String> partitionNames, long transactionId, long writeId, DataOperationType operation)
     {
         throw new UnsupportedOperationException();
     }

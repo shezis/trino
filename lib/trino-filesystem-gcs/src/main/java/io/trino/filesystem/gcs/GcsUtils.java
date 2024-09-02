@@ -13,11 +13,13 @@
  */
 package io.trino.filesystem.gcs;
 
+import com.google.cloud.BaseServiceException;
 import com.google.cloud.ReadChannel;
 import com.google.cloud.storage.Blob;
 import com.google.cloud.storage.BlobId;
 import com.google.cloud.storage.Storage;
 import io.trino.filesystem.Location;
+import io.trino.filesystem.TrinoFileSystemException;
 
 import java.io.FileNotFoundException;
 import java.io.IOException;
@@ -25,8 +27,8 @@ import java.util.Collection;
 import java.util.Optional;
 import java.util.OptionalLong;
 
-import static com.google.api.client.util.Preconditions.checkArgument;
 import static com.google.cloud.storage.Blob.BlobSourceOption.shouldReturnRawInputStream;
+import static com.google.common.base.Preconditions.checkArgument;
 import static java.util.Objects.requireNonNull;
 
 public class GcsUtils
@@ -36,12 +38,18 @@ public class GcsUtils
     public static IOException handleGcsException(RuntimeException exception, String action, GcsLocation location)
             throws IOException
     {
+        if (exception instanceof BaseServiceException) {
+            throw new TrinoFileSystemException("GCS service error %s: %s".formatted(action, location), exception);
+        }
         throw new IOException("Error %s: %s".formatted(action, location), exception);
     }
 
     public static IOException handleGcsException(RuntimeException exception, String action, Collection<Location> locations)
             throws IOException
     {
+        if (exception instanceof BaseServiceException) {
+            throw new TrinoFileSystemException("GCS service error %s: %s".formatted(action, locations), exception);
+        }
         throw new IOException("Error %s: %s".formatted(action, locations), exception);
     }
 
@@ -49,7 +57,7 @@ public class GcsUtils
             throws IOException
     {
         long fileSize = requireNonNull(blob.getSize(), "blob size is null");
-        if (position >= fileSize) {
+        if (position != 0 && position >= fileSize) {
             throw new IOException("Cannot read at %s. File size is %s: %s".formatted(position, fileSize, location));
         }
         // Enable shouldReturnRawInputStream: currently set by default but just to ensure the behavior is predictable

@@ -53,7 +53,6 @@ use {doc}`secrets </security/secrets>` to avoid actual values in the catalog
 properties files.
 
 (mysql-tls)=
-
 ### Connection security
 
 If you have TLS configured with a globally-trusted certificate installed on your
@@ -97,17 +96,19 @@ creates a catalog named `sales` using the configured connector.
 ```{include} jdbc-domain-compaction-threshold.fragment
 ```
 
-```{include} jdbc-procedures.fragment
-```
-
 ```{include} jdbc-case-insensitive-matching.fragment
 ```
 
 ```{include} non-transactional-insert.fragment
 ```
 
-(mysql-type-mapping)=
+(mysql-fte-support)=
+### Fault-tolerant execution support
 
+The connector supports {doc}`/admin/fault-tolerant-execution` of query
+processing. Read and write operations are both supported with any retry policy.
+
+(mysql-type-mapping)=
 ## Type mapping
 
 Because Trino and MySQL each support types that the other does not, this
@@ -290,7 +291,6 @@ To avoid the errors, you must use a time zone that is known on both systems,
 or [install the missing time zone on the MySQL server](https://dev.mysql.com/doc/refman/8.0/en/time-zone-support.html#time-zone-installation).
 
 (mysql-decimal-handling)=
-
 ```{include} decimal-type-handling.fragment
 ```
 
@@ -331,7 +331,6 @@ If you used a different name for your catalog properties file, use
 that catalog name instead of `example` in the above examples.
 
 (mysql-sql-support)=
-
 ## SQL support
 
 The connector provides read access and write access to data and metadata in the
@@ -355,21 +354,20 @@ the following statements:
 ```{include} sql-delete-limitation.fragment
 ```
 
-(mysql-fte-support)=
+### Procedures
 
-## Fault-tolerant execution support
+```{include} jdbc-procedures-flush.fragment
+```
+```{include} procedures-execute.fragment
+```
 
-The connector supports {doc}`/admin/fault-tolerant-execution` of query
-processing. Read and write operations are both supported with any retry policy.
-
-## Table functions
+### Table functions
 
 The connector provides specific {doc}`table functions </functions/table>` to
 access MySQL.
 
 (mysql-query-function)=
-
-### `query(varchar) -> table`
+#### `query(varchar) -> table`
 
 The `query` function allows you to query the underlying database directly. It
 requires syntax native to MySQL, because the full query is pushed down and
@@ -408,7 +406,6 @@ The connector includes a number of performance improvements, detailed in the
 following sections.
 
 (mysql-table-statistics)=
-
 ### Table statistics
 
 The MySQL connector can use {doc}`table and column statistics
@@ -452,7 +449,6 @@ Refer to MySQL documentation for information about options, limitations
 and additional considerations.
 
 (mysql-pushdown)=
-
 ### Pushdown
 
 The connector supports pushdown for a number of operations:

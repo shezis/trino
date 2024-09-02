@@ -15,17 +15,20 @@ package io.trino.sql.planner.iterative.rule;
 
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
+import io.trino.sql.ir.Logical;
+import io.trino.sql.ir.Reference;
 import io.trino.sql.planner.Symbol;
 import io.trino.sql.planner.iterative.rule.test.BaseRuleTest;
+import io.trino.sql.planner.iterative.rule.test.PlanBuilder;
 import io.trino.sql.planner.plan.AggregationNode;
-import io.trino.sql.tree.FunctionCall;
-import io.trino.sql.tree.QualifiedName;
 import org.junit.jupiter.api.Test;
 
 import java.util.Optional;
 
 import static io.trino.spi.type.BigintType.BIGINT;
 import static io.trino.spi.type.BooleanType.BOOLEAN;
+import static io.trino.sql.ir.Booleans.TRUE;
+import static io.trino.sql.ir.Logical.Operator.AND;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.aggregation;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.aggregationFunction;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.expression;
@@ -41,16 +44,16 @@ public class TestImplementFilteredAggregations
     @Test
     public void testFilterToMask()
     {
-        tester().assertThat(new ImplementFilteredAggregations(tester().getMetadata()))
+        tester().assertThat(new ImplementFilteredAggregations())
                 .on(p -> {
-                    Symbol a = p.symbol("a");
-                    Symbol g = p.symbol("g");
+                    Symbol a = p.symbol("a", BIGINT);
+                    Symbol g = p.symbol("g", BIGINT);
                     Symbol filter = p.symbol("filter", BOOLEAN);
                     return p.aggregation(builder -> builder
                             .singleGroupingSet(g)
                             .addAggregation(
-                                    p.symbol("sum"),
-                                    functionWithFilter("sum", a, Optional.of(filter)),
+                                    p.symbol("sum", BIGINT),
+                                    PlanBuilder.aggregation("sum", ImmutableList.of(a.toSymbolReference()), filter),
                                     ImmutableList.of(BIGINT))
                             .source(p.values(a, g, filter)));
                 })
@@ -63,16 +66,16 @@ public class TestImplementFilteredAggregations
                                 Optional.empty(),
                                 AggregationNode.Step.SINGLE,
                                 filter(
-                                        "true",
+                                        TRUE,
                                         project(
-                                                ImmutableMap.of("a", expression("a"), "g", expression("g"), "filter", expression("filter")),
+                                                ImmutableMap.of("a", expression(new Reference(BIGINT, "a")), "g", expression(new Reference(BIGINT, "g")), "filter", expression(new Reference(BOOLEAN, "filter"))),
                                                 values("a", "g", "filter")))));
     }
 
     @Test
     public void testCombineMaskAndFilter()
     {
-        tester().assertThat(new ImplementFilteredAggregations(tester().getMetadata()))
+        tester().assertThat(new ImplementFilteredAggregations())
                 .on(p -> {
                     Symbol a = p.symbol("a");
                     Symbol g = p.symbol("g");
@@ -82,7 +85,7 @@ public class TestImplementFilteredAggregations
                             .singleGroupingSet(g)
                             .addAggregation(
                                     p.symbol("sum"),
-                                    functionWithFilter("sum", a, Optional.of(filter)),
+                                    PlanBuilder.aggregation("sum", ImmutableList.of(a.toSymbolReference()), filter),
                                     ImmutableList.of(BIGINT),
                                     mask)
                             .source(p.values(a, g, mask, filter)));
@@ -96,16 +99,21 @@ public class TestImplementFilteredAggregations
                                 Optional.empty(),
                                 AggregationNode.Step.SINGLE,
                                 filter(
-                                        "true",
+                                        TRUE,
                                         project(
-                                                ImmutableMap.of("a", expression("a"), "g", expression("g"), "mask", expression("mask"), "filter", expression("filter"), "new_mask", expression("mask AND filter")),
+                                                ImmutableMap.of(
+                                                        "a", expression(new Reference(BIGINT, "a")),
+                                                        "g", expression(new Reference(BIGINT, "g")),
+                                                        "mask", expression(new Reference(BOOLEAN, "mask")),
+                                                        "filter", expression(new Reference(BOOLEAN, "filter")),
+                                                        "new_mask", expression(new Logical(AND, ImmutableList.of(new Reference(BOOLEAN, "mask"), new Reference(BOOLEAN, "filter"))))),
                                                 values("a", "g", "mask", "filter")))));
     }
 
     @Test
     public void testWithFilterPushdown()
     {
-        tester().assertThat(new ImplementFilteredAggregations(tester().getMetadata()))
+        tester().assertThat(new ImplementFilteredAggregations())
                 .on(p -> {
                     Symbol a = p.symbol("a");
                     Symbol g = p.symbol("g");
@@ -114,7 +122,7 @@ public class TestImplementFilteredAggregations
                             .globalGrouping()
                             .addAggregation(
                                     p.symbol("sum"),
-                                    functionWithFilter("sum", a, Optional.of(filter)),
+                                    PlanBuilder.aggregation("sum", ImmutableList.of(a.toSymbolReference()), filter),
                                     ImmutableList.of(BIGINT))
                             .source(p.values(a, g, filter)));
                 })
@@ -127,16 +135,16 @@ public class TestImplementFilteredAggregations
                                 Optional.empty(),
                                 AggregationNode.Step.SINGLE,
                                 filter(
-                                        "filter",
+                                        new Reference(BOOLEAN, "filter"),
                                         project(
-                                                ImmutableMap.of("a", expression("a"), "g", expression("g"), "filter", expression("filter")),
+                                                ImmutableMap.of("a", expression(new Reference(BIGINT, "a")), "g", expression(new Reference(BIGINT, "g")), "filter", expression(new Reference(BOOLEAN, "filter"))),
                                                 values("a", "g", "filter")))));
     }
 
     @Test
     public void testWithMultipleAggregations()
     {
-        tester().assertThat(new ImplementFilteredAggregations(tester().getMetadata()))
+        tester().assertThat(new ImplementFilteredAggregations())
                 .on(p -> {
                     Symbol a = p.symbol("a");
                     Symbol g = p.symbol("g");
@@ -145,11 +153,11 @@ public class TestImplementFilteredAggregations
                             .globalGrouping()
                             .addAggregation(
                                     p.symbol("sum"),
-                                    functionWithFilter("sum", a, Optional.of(filter)),
+                                    PlanBuilder.aggregation("sum", ImmutableList.of(a.toSymbolReference()), filter),
                                     ImmutableList.of(BIGINT))
                             .addAggregation(
                                     p.symbol("avg"),
-                                    functionWithFilter("avg", a, Optional.empty()),
+                                    PlanBuilder.aggregation("avg", ImmutableList.of(a.toSymbolReference())),
                                     ImmutableList.of(BIGINT))
                             .source(p.values(a, g, filter)));
                 })
@@ -162,23 +170,9 @@ public class TestImplementFilteredAggregations
                                 Optional.empty(),
                                 AggregationNode.Step.SINGLE,
                                 filter(
-                                        "true",
+                                        TRUE,
                                         project(
-                                                ImmutableMap.of("a", expression("a"), "g", expression("g"), "filter", expression("filter")),
+                                                ImmutableMap.of("a", expression(new Reference(BIGINT, "a")), "g", expression(new Reference(BIGINT, "g")), "filter", expression(new Reference(BOOLEAN, "filter"))),
                                                 values("a", "g", "filter")))));
-    }
-
-    private FunctionCall functionWithFilter(String name, Symbol argument, Optional<Symbol> filter)
-    {
-        return new FunctionCall(
-                Optional.empty(),
-                QualifiedName.of(name),
-                Optional.empty(),
-                filter.map(Symbol::toSymbolReference),
-                Optional.empty(),
-                false,
-                Optional.empty(),
-                Optional.empty(),
-                ImmutableList.of(argument.toSymbolReference()));
     }
 }

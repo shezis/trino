@@ -18,13 +18,13 @@ import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.util.concurrent.Futures;
 import com.google.common.util.concurrent.ListenableFuture;
+import io.airlift.configuration.secrets.SecretsResolver;
 import io.airlift.json.JsonCodec;
 import io.airlift.node.NodeInfo;
 import io.airlift.units.Duration;
 import io.opentelemetry.api.OpenTelemetry;
 import io.trino.Session;
 import io.trino.client.NodeVersion;
-import io.trino.connector.CatalogProperties;
 import io.trino.connector.ConnectorCatalogServiceProvider;
 import io.trino.connector.ConnectorServices;
 import io.trino.connector.ConnectorServicesProvider;
@@ -56,6 +56,7 @@ import io.trino.plugin.base.security.DefaultSystemAccessControl;
 import io.trino.security.AccessControlConfig;
 import io.trino.security.AccessControlManager;
 import io.trino.server.protocol.Slug;
+import io.trino.spi.catalog.CatalogProperties;
 import io.trino.spi.connector.CatalogHandle;
 import io.trino.spi.resourcegroups.QueryType;
 import io.trino.spi.resourcegroups.ResourceGroupId;
@@ -102,6 +103,7 @@ public class TestLocalDispatchQuery
                 emptyEventListenerManager(),
                 new AccessControlConfig(),
                 OpenTelemetry.noop(),
+                new SecretsResolver(ImmutableMap.of()),
                 DefaultSystemAccessControl.NAME);
         accessControl.setSystemAccessControls(List.of(AllowAllSystemAccessControl.INSTANCE));
         QueryStateMachine queryStateMachine = QueryStateMachine.begin(
@@ -126,7 +128,7 @@ public class TestLocalDispatchQuery
                 JsonCodec.jsonCodec(OperatorStats.class),
                 JsonCodec.jsonCodec(ExecutionFailureInfo.class),
                 JsonCodec.jsonCodec(StatsAndCosts.class),
-                new EventListenerManager(new EventListenerConfig()),
+                new EventListenerManager(new EventListenerConfig(), new SecretsResolver(ImmutableMap.of())),
                 new NodeInfo("node"),
                 new NodeVersion("version"),
                 new SessionPropertyManager(),

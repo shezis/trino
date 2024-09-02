@@ -16,6 +16,7 @@ package io.trino.security;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
+import io.airlift.configuration.secrets.SecretsResolver;
 import io.opentelemetry.api.OpenTelemetry;
 import io.trino.client.NodeVersion;
 import io.trino.connector.CatalogServiceProvider;
@@ -110,7 +111,7 @@ public class TestAccessControlManager
         assertAccessControl(new ReadOnlySystemAccessControl(), new AllowAllAccessControl(), (accessControlManager, securityContext) ->
         {
             accessControlManager.checkCanSetUser(Optional.of(PRINCIPAL), USER_NAME);
-            accessControlManager.checkCanSetSystemSessionProperty(identity, "property");
+            accessControlManager.checkCanSetSystemSessionProperty(identity, queryId, "property");
             accessControlManager.checkCanSetCatalogSessionProperty(securityContext, TEST_CATALOG_NAME, "property");
             accessControlManager.checkCanShowSchemas(securityContext, TEST_CATALOG_NAME);
             accessControlManager.checkCanShowTables(securityContext, new CatalogSchemaName(TEST_CATALOG_NAME, "schema"));
@@ -392,22 +393,22 @@ public class TestAccessControlManager
 
         return createAccessControlManager(
                 eventListenerManager,
-                new AccessControlConfig().setAccessControlFiles(accessControlConfigPath));
+                new AccessControlConfig().setAccessControlFiles(ImmutableList.of(accessControlConfigPath)));
     }
 
     private static AccessControlManager createAccessControlManager(TransactionManager testTransactionManager)
     {
-        return new AccessControlManager(NodeVersion.UNKNOWN, testTransactionManager, emptyEventListenerManager(), new AccessControlConfig(), OpenTelemetry.noop(), DefaultSystemAccessControl.NAME);
+        return new AccessControlManager(NodeVersion.UNKNOWN, testTransactionManager, emptyEventListenerManager(), new AccessControlConfig(), OpenTelemetry.noop(), new SecretsResolver(ImmutableMap.of()), DefaultSystemAccessControl.NAME);
     }
 
     private static AccessControlManager createAccessControlManager(EventListenerManager eventListenerManager, AccessControlConfig config)
     {
-        return new AccessControlManager(NodeVersion.UNKNOWN, createTestTransactionManager(), eventListenerManager, config, OpenTelemetry.noop(), DefaultSystemAccessControl.NAME);
+        return new AccessControlManager(NodeVersion.UNKNOWN, createTestTransactionManager(), eventListenerManager, config, OpenTelemetry.noop(), new SecretsResolver(ImmutableMap.of()), DefaultSystemAccessControl.NAME);
     }
 
     private static AccessControlManager createAccessControlManager(EventListenerManager eventListenerManager, String defaultAccessControlName)
     {
-        return new AccessControlManager(NodeVersion.UNKNOWN, createTestTransactionManager(), eventListenerManager, new AccessControlConfig(), OpenTelemetry.noop(), defaultAccessControlName);
+        return new AccessControlManager(NodeVersion.UNKNOWN, createTestTransactionManager(), eventListenerManager, new AccessControlConfig(), OpenTelemetry.noop(), new SecretsResolver(ImmutableMap.of()), defaultAccessControlName);
     }
 
     private static SystemAccessControlFactory eventListeningSystemAccessControlFactory(String name, EventListener... eventListeners)
@@ -426,7 +427,7 @@ public class TestAccessControlManager
                 return new SystemAccessControl()
                 {
                     @Override
-                    public void checkCanSetSystemSessionProperty(Identity identity, String propertyName)
+                    public void checkCanSetSystemSessionProperty(Identity identity, QueryId queryId, String propertyName)
                     {
                     }
 

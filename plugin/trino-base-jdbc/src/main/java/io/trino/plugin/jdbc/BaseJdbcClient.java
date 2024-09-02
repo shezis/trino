@@ -14,11 +14,13 @@
 package io.trino.plugin.jdbc;
 
 import com.google.common.base.VerifyException;
+import com.google.common.collect.AbstractIterator;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.ImmutableSortedSet;
 import com.google.common.io.Closer;
+import dev.failsafe.function.CheckedRunnable;
 import io.airlift.log.Logger;
 import io.trino.plugin.base.mapping.IdentifierMapping;
 import io.trino.plugin.base.mapping.RemoteIdentifiers;
@@ -35,6 +37,8 @@ import io.trino.spi.connector.ConnectorTableMetadata;
 import io.trino.spi.connector.FixedSplitSource;
 import io.trino.spi.connector.JoinStatistics;
 import io.trino.spi.connector.JoinType;
+import io.trino.spi.connector.RelationColumnsMetadata;
+import io.trino.spi.connector.RelationCommentMetadata;
 import io.trino.spi.connector.SchemaNotFoundException;
 import io.trino.spi.connector.SchemaTableName;
 import io.trino.spi.connector.TableNotFoundException;
@@ -58,6 +62,7 @@ import java.sql.SQLException;
 import java.sql.Statement;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -74,6 +79,8 @@ import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.base.Strings.emptyToNull;
 import static com.google.common.base.Strings.isNullOrEmpty;
+import static com.google.common.base.Throwables.throwIfInstanceOf;
+import static com.google.common.base.Throwables.throwIfUnchecked;
 import static com.google.common.base.Verify.verify;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.collect.ImmutableSet.toImmutableSet;
@@ -91,10 +98,12 @@ import static io.trino.plugin.jdbc.TypeHandlingJdbcSessionProperties.getUnsuppor
 import static io.trino.plugin.jdbc.UnsupportedTypeHandling.IGNORE;
 import static io.trino.spi.StandardErrorCode.NOT_SUPPORTED;
 import static io.trino.spi.type.VarcharType.createUnboundedVarcharType;
+import static java.lang.Boolean.TRUE;
 import static java.lang.String.CASE_INSENSITIVE_ORDER;
 import static java.lang.String.format;
 import static java.lang.String.join;
 import static java.sql.DatabaseMetaData.columnNoNulls;
+import static java.util.Collections.emptyIterator;
 import static java.util.Collections.emptyMap;
 import static java.util.Objects.requireNonNull;
 import static java.util.stream.Collectors.joining;
@@ -180,6 +189,14 @@ public abstract class BaseJdbcClient
     @Override
     public List<SchemaTableName> getTableNames(ConnectorSession session, Optional<String> schema)
     {
+        return getAllTableComments(session, schema).stream()
+                .map(RelationCommentMetadata::name)
+                .collect(toImmutableList());
+    }
+
+    @Override
+    public List<RelationCommentMetadata> getAllTableComments(ConnectorSession session, Optional<String> schema)
+    {
         try (Connection connection = connectionFactory.openConnection(session)) {
             ConnectorIdentity identity = session.getIdentity();
             Optional<String> remoteSchema = schema.map(schemaName -> identifierMapping.toRemoteSchemaName(getRemoteIdentifiers(connection), identity, schemaName));
@@ -188,13 +205,13 @@ public abstract class BaseJdbcClient
             }
 
             try (ResultSet resultSet = getTables(connection, remoteSchema, Optional.empty())) {
-                ImmutableList.Builder<SchemaTableName> list = ImmutableList.builder();
+                ImmutableList.Builder<RelationCommentMetadata> list = ImmutableList.builder();
                 while (resultSet.next()) {
                     String remoteSchemaFromResultSet = getTableSchemaName(resultSet);
                     String tableSchema = identifierMapping.fromRemoteSchemaName(remoteSchemaFromResultSet);
                     String tableName = identifierMapping.fromRemoteTableName(remoteSchemaFromResultSet, resultSet.getString("TABLE_NAME"));
                     if (filterSchema(tableSchema)) {
-                        list.add(new SchemaTableName(tableSchema, tableName));
+                        list.add(RelationCommentMetadata.forRelation(new SchemaTableName(tableSchema, tableName), getTableComment(resultSet)));
                     }
                 }
                 return list.build();
@@ -239,7 +256,7 @@ public abstract class BaseJdbcClient
                 PreparedStatement preparedStatement = queryBuilder.prepareStatement(this, session, connection, preparedQuery, Optional.empty())) {
             ResultSetMetaData metadata = preparedStatement.getMetaData();
             if (metadata == null) {
-                throw new TrinoException(NOT_SUPPORTED, "Query not supported: ResultSetMetaData not available for query: " + preparedQuery.getQuery());
+                throw new TrinoException(NOT_SUPPORTED, "Query not supported: ResultSetMetaData not available for query: " + preparedQuery.query());
             }
             return new JdbcTableHandle(
                     new JdbcQueryRelationHandle(preparedQuery),
@@ -352,6 +369,181 @@ public abstract class BaseJdbcClient
         }
     }
 
+    @Override
+    public Iterator<RelationColumnsMetadata> getAllTableColumns(ConnectorSession session, Optional<String> schema)
+    {
+        Connection connection = null;
+        ResultSet resultSet = null;
+        try {
+            connection = connectionFactory.openConnection(session);
+            Connection connectionFinal = connection;
+            Optional<String> remoteSchema = schema.map(name -> {
+                RemoteIdentifiers remoteIdentifiers = getRemoteIdentifiers(connectionFinal);
+                return identifierMapping.toRemoteSchemaName(remoteIdentifiers, session.getIdentity(), name);
+            });
+            if (remoteSchema.isPresent() && !filterSchema(remoteSchema.get())) {
+                return emptyIterator();
+            }
+
+            // getTables filter tables by table_type. This is not possible to do when reading columns result set.
+            ImmutableSet.Builder<RemoteTableName> visibleTables = ImmutableSet.builder();
+            try (ResultSet tablesResultSet = getTables(connection, remoteSchema, Optional.empty())) {
+                while (tablesResultSet.next()) {
+                    if (filterSchema(getTableSchemaName(tablesResultSet))) {
+                        visibleTables.add(getRemoteTable(tablesResultSet));
+                    }
+                }
+            }
+
+            resultSet = getAllTableColumns(connection, remoteSchema);
+            return new IterateTableColumns(session, connection, visibleTables.build(), resultSet);
+        }
+        catch (RuntimeException | SQLException e) {
+            if (resultSet != null) {
+                ResultSet resultSetFinal = resultSet;
+                Connection connectionFinal = connection;
+                cleanupSuppressing(e, () -> abortReadConnection(connectionFinal, resultSetFinal));
+                cleanupSuppressing(e, resultSet::close);
+            }
+            if (connection != null) {
+                cleanupSuppressing(e, connection::close);
+            }
+            throwIfUnchecked(e);
+            throw new TrinoException(JDBC_ERROR, e);
+        }
+    }
+
+    private class IterateTableColumns
+            extends AbstractIterator<RelationColumnsMetadata>
+    {
+        private final ConnectorSession session;
+        private final Connection connection;
+        private final Set<RemoteTableName> visibleTables;
+        private final ResultSet resultSet;
+
+        private RemoteTableName currentTable;
+        private boolean currentTableVisible;
+        // Not set when current table not visible
+        private SchemaTableName currentTableName;
+        // Not set when current table not visible
+        private ImmutableList.Builder<ColumnMetadata> currentTableColumns;
+
+        public IterateTableColumns(ConnectorSession session, Connection connection, Set<RemoteTableName> visibleTables, ResultSet resultSet)
+        {
+            this.session = requireNonNull(session, "session is null");
+            this.connection = requireNonNull(connection, "connection is null");
+            this.visibleTables = requireNonNull(visibleTables, "visibleTables is null");
+            this.resultSet = requireNonNull(resultSet, "resultSet is null");
+        }
+
+        @Override
+        protected RelationColumnsMetadata computeNext()
+        {
+            try {
+                RelationColumnsMetadata computedNext = null;
+                while (computedNext == null && resultSet.next()) {
+                    RemoteTableName nextTable = getRemoteTable(resultSet);
+                    if (currentTable != null && !currentTable.equals(nextTable)) {
+                        computedNext = finishCurrentTable().orElse(null);
+                    }
+
+                    try {
+                        if (currentTable == null) {
+                            currentTable = nextTable;
+                            String remoteSchemaFromResultSet = getTableSchemaName(resultSet);
+                            currentTableVisible = visibleTables.contains(nextTable);
+                            if (currentTableVisible) {
+                                currentTableName = new SchemaTableName(
+                                        identifierMapping.fromRemoteSchemaName(remoteSchemaFromResultSet),
+                                        identifierMapping.fromRemoteTableName(remoteSchemaFromResultSet, resultSet.getString("TABLE_NAME")));
+                                currentTableColumns = ImmutableList.builder();
+                            }
+                        }
+                        if (!currentTableVisible) {
+                            continue;
+                        }
+
+                        String columnName = resultSet.getString("COLUMN_NAME");
+                        JdbcTypeHandle typeHandle = new JdbcTypeHandle(
+                                getInteger(resultSet, "DATA_TYPE").orElseThrow(() -> new IllegalStateException("DATA_TYPE is null")),
+                                Optional.ofNullable(resultSet.getString("TYPE_NAME")),
+                                getInteger(resultSet, "COLUMN_SIZE"),
+                                getInteger(resultSet, "DECIMAL_DIGITS"),
+                                // arrayDimensions
+                                Optional.<Integer>empty(),
+                                // This code doesn't do getCaseSensitivityForColumns. However, this does not impact the ColumnMetadata returned.
+                                Optional.<CaseSensitivity>empty());
+                        boolean nullable = (resultSet.getInt("NULLABLE") != columnNoNulls);
+                        Optional<String> comment = Optional.ofNullable(emptyToNull(resultSet.getString("REMARKS")));
+                        toColumnMapping(session, connection, typeHandle).ifPresent(columnMapping -> {
+                            currentTableColumns.add(ColumnMetadata.builder()
+                                    .setName(columnName)
+                                    .setType(columnMapping.getType())
+                                    .setNullable(nullable)
+                                    .setComment(comment)
+                                    .build());
+                        });
+                    }
+                    catch (RuntimeException | SQLException e) {
+                        throwIfInstanceOf(e, TrinoException.class);
+                        throw new RuntimeException("Failure when processing column information for table %s: %s".formatted(currentTable, firstNonNull(e.getMessage(), e)), e);
+                    }
+                }
+                if (computedNext == null) {
+                    // Last table
+                    computedNext = finishCurrentTable().orElse(null);
+                }
+                if (computedNext == null) {
+                    // We will not be called again.
+                    resultSet.close();
+                    connection.close();
+                    return endOfData();
+                }
+                return computedNext;
+            }
+            catch (RuntimeException | SQLException e) {
+                cleanupSuppressing(e, () -> abortReadConnection(connection, resultSet));
+                cleanupSuppressing(e, resultSet::close);
+                cleanupSuppressing(e, connection::close);
+                throwIfUnchecked(e);
+                throw new TrinoException(JDBC_ERROR, e);
+            }
+        }
+
+        private Optional<RelationColumnsMetadata> finishCurrentTable()
+        {
+            if (currentTable == null) {
+                return Optional.empty();
+            }
+            Optional<RelationColumnsMetadata> currentTableMetadata = Optional.empty();
+            if (currentTableVisible) {
+                List<ColumnMetadata> columnMetadata = currentTableColumns.build();
+                if (!columnMetadata.isEmpty()) { // Ignore tables with no supported columns
+                    currentTableMetadata = Optional.of(RelationColumnsMetadata.forTable(currentTableName, columnMetadata));
+                }
+            }
+            currentTable = null;
+            currentTableName = null;
+            currentTableColumns = null;
+            return currentTableMetadata;
+        }
+    }
+
+    private static void cleanupSuppressing(Throwable inflight, CheckedRunnable cleanup)
+    {
+        try {
+            cleanup.run();
+        }
+        catch (Throwable cleanupException) {
+            if (cleanupException instanceof InterruptedException) {
+                Thread.currentThread().interrupt();
+            }
+            if (inflight != cleanupException) {
+                inflight.addSuppressed(cleanupException);
+            }
+        }
+    }
+
     protected Map<String, CaseSensitivity> getCaseSensitivityForColumns(ConnectorSession session, Connection connection, JdbcTableHandle tableHandle)
     {
         return ImmutableMap.of();
@@ -378,6 +570,27 @@ public abstract class BaseJdbcClient
                 null);
     }
 
+    protected ResultSet getAllTableColumns(Connection connection, Optional<String> remoteSchemaName)
+            throws SQLException
+    {
+        if (TRUE) {
+            // A really compliant database would have the implementation as below.
+            // However, any subclass overriding
+            //  - listing tables (getTables(Connection, ...)) OR
+            //  - listing table's columns (getColumns(..., DatabaseMetaData))
+            // would need to override this method. So, to be on the safe side,
+            // there is no default implementation for this method, and the capability remains opt-in.
+            throw new TrinoException(NOT_SUPPORTED, "The requested column listing mode is not supported");
+        }
+        // Unreachable (see comment above). Kept for illustration purposes.
+        DatabaseMetaData metadata = connection.getMetaData();
+        return metadata.getColumns(
+                metadata.getConnection().getCatalog(),
+                escapeObjectNameForMetadataQuery(remoteSchemaName, metadata.getSearchStringEscape()).orElse(null),
+                null,
+                null);
+    }
+
     @Override
     public List<ColumnMapping> toColumnMappings(ConnectorSession session, List<JdbcTypeHandle> typeHandles)
     {
@@ -394,7 +607,7 @@ public abstract class BaseJdbcClient
 
     protected Optional<ColumnMapping> getForcedMappingToVarchar(JdbcTypeHandle typeHandle)
     {
-        if (typeHandle.getJdbcTypeName().isPresent() && jdbcTypesMappedToVarchar.contains(typeHandle.getJdbcTypeName().get())) {
+        if (typeHandle.jdbcTypeName().isPresent() && jdbcTypesMappedToVarchar.contains(typeHandle.jdbcTypeName().get())) {
             return mapToUnboundedVarchar(typeHandle);
         }
         return Optional.empty();
@@ -409,7 +622,7 @@ public abstract class BaseJdbcClient
                 (statement, index, value) -> {
                     throw new TrinoException(
                             NOT_SUPPORTED,
-                            "Underlying type that is mapped to VARCHAR is not supported for INSERT: " + typeHandle.getJdbcTypeName().get());
+                            "Underlying type that is mapped to VARCHAR is not supported for INSERT: " + typeHandle.jdbcTypeName().get());
                 },
                 DISABLE_PUSHDOWN));
     }
@@ -441,7 +654,8 @@ public abstract class BaseJdbcClient
         return getConnection(session);
     }
 
-    private Connection getConnection(ConnectorSession session)
+    @Override
+    public Connection getConnection(ConnectorSession session)
             throws SQLException
     {
         Connection connection = connectionFactory.openConnection(session);
@@ -717,9 +931,7 @@ public abstract class BaseJdbcClient
         }
 
         return new JdbcOutputTableHandle(
-                catalog,
-                remoteSchema,
-                remoteTable,
+                new RemoteTableName(Optional.ofNullable(catalog), Optional.ofNullable(remoteSchema), remoteTable),
                 columnNames.build(),
                 columnTypes.build(),
                 Optional.empty(),
@@ -801,9 +1013,7 @@ public abstract class BaseJdbcClient
 
         if (isNonTransactionalInsert(session)) {
             return new JdbcOutputTableHandle(
-                    catalog,
-                    remoteSchema,
-                    remoteTable,
+                    new RemoteTableName(Optional.ofNullable(catalog), Optional.ofNullable(remoteSchema), remoteTable),
                     columnNames.build(),
                     columnTypes.build(),
                     Optional.of(jdbcColumnTypes.build()),
@@ -825,9 +1035,7 @@ public abstract class BaseJdbcClient
         }
 
         return new JdbcOutputTableHandle(
-                catalog,
-                remoteSchema,
-                remoteTable,
+                new RemoteTableName(Optional.ofNullable(catalog), Optional.ofNullable(remoteSchema), remoteTable),
                 columnNames.build(),
                 columnTypes.build(),
                 Optional.of(jdbcColumnTypes.build()),
@@ -861,10 +1069,10 @@ public abstract class BaseJdbcClient
         else {
             renameTable(
                     session,
-                    handle.getCatalogName(),
-                    handle.getSchemaName(),
+                    handle.getRemoteTableName().getCatalogName().orElse(null),
+                    handle.getRemoteTableName().getSchemaName().orElse(null),
                     handle.getTemporaryTableName().orElseThrow(() -> new IllegalStateException("Temporary table name missing")),
-                    new SchemaTableName(handle.getSchemaName(), handle.getTableName()));
+                    handle.getRemoteTableName().getSchemaTableName());
         }
     }
 
@@ -909,8 +1117,8 @@ public abstract class BaseJdbcClient
         verify(handle.getPageSinkIdColumnName().isPresent(), "Output table handle's pageSinkIdColumn is empty");
 
         RemoteTableName pageSinkTable = new RemoteTableName(
-                Optional.ofNullable(handle.getCatalogName()),
-                Optional.ofNullable(handle.getSchemaName()),
+                handle.getRemoteTableName().getCatalogName(),
+                handle.getRemoteTableName().getSchemaName(),
                 generateTemporaryTableName(session));
 
         int maxBatchSize = getWriteBatchSize(session);
@@ -959,13 +1167,9 @@ public abstract class BaseJdbcClient
         }
 
         RemoteTableName temporaryTable = new RemoteTableName(
-                Optional.ofNullable(handle.getCatalogName()),
-                Optional.ofNullable(handle.getSchemaName()),
+                handle.getRemoteTableName().getCatalogName(),
+                handle.getRemoteTableName().getSchemaName(),
                 handle.getTemporaryTableName().orElseThrow());
-        RemoteTableName targetTable = new RemoteTableName(
-                Optional.ofNullable(handle.getCatalogName()),
-                Optional.ofNullable(handle.getSchemaName()),
-                handle.getTableName());
 
         // We conditionally create more than the one table, so keep a list of the tables that need to be dropped.
         Closer closer = Closer.create();
@@ -978,7 +1182,7 @@ public abstract class BaseJdbcClient
                     .collect(joining(", "));
 
             String insertSql = format("INSERT INTO %s (%s) SELECT %s FROM %s temp_table",
-                    postProcessInsertTableNameClause(session, quoted(targetTable)),
+                    postProcessInsertTableNameClause(session, quoted(handle.getRemoteTableName())),
                     columns,
                     columns,
                     quoted(temporaryTable));
@@ -1144,8 +1348,8 @@ public abstract class BaseJdbcClient
         if (handle.getTemporaryTableName().isPresent()) {
             dropTable(session,
                     new RemoteTableName(
-                            Optional.ofNullable(handle.getCatalogName()),
-                            Optional.ofNullable(handle.getSchemaName()),
+                            handle.getRemoteTableName().getCatalogName(),
+                            handle.getRemoteTableName().getSchemaName(),
                             handle.getTemporaryTableName().get()),
                     true);
         }
@@ -1169,7 +1373,10 @@ public abstract class BaseJdbcClient
         checkArgument(handle.getColumnNames().size() == columnWriters.size(), "handle and columnWriters mismatch: %s, %s", handle, columnWriters);
         return format(
                 "INSERT INTO %s (%s%s) VALUES (%s%s)",
-                quoted(handle.getCatalogName(), handle.getSchemaName(), handle.getTemporaryTableName().orElseGet(handle::getTableName)),
+                quoted(
+                        handle.getRemoteTableName().getCatalogName().orElse(null),
+                        handle.getRemoteTableName().getSchemaName().orElse(null),
+                        handle.getTemporaryTableName().orElseGet(() -> handle.getRemoteTableName().getTableName())),
                 handle.getColumnNames().stream()
                         .map(this::quoted)
                         .collect(joining(", ")),
@@ -1570,9 +1777,9 @@ public abstract class BaseJdbcClient
             return (query, sortItems, limit) -> {
                 String orderBy = sortItems.stream()
                         .map(sortItem -> {
-                            String ordering = sortItem.getSortOrder().isAscending() ? "ASC" : "DESC";
-                            String nullsHandling = sortItem.getSortOrder().isNullsFirst() ? "NULLS FIRST" : "NULLS LAST";
-                            return format("%s %s %s", quote.apply(sortItem.getColumn().getColumnName()), ordering, nullsHandling);
+                            String ordering = sortItem.sortOrder().isAscending() ? "ASC" : "DESC";
+                            String nullsHandling = sortItem.sortOrder().isNullsFirst() ? "NULLS FIRST" : "NULLS LAST";
+                            return format("%s %s %s", quote.apply(sortItem.column().getColumnName()), ordering, nullsHandling);
                         })
                         .collect(joining(", "));
 

@@ -19,6 +19,9 @@ import com.google.common.collect.ImmutableMultimap;
 import com.google.common.collect.Multimap;
 import io.trino.filesystem.Location;
 import io.trino.parquet.ParquetDataSourceId;
+import io.trino.parquet.metadata.BlockMetadata;
+import io.trino.parquet.metadata.ColumnChunkMetadata;
+import io.trino.parquet.metadata.ParquetMetadata;
 import io.trino.parquet.reader.MetadataReader;
 import io.trino.plugin.deltalake.DataFileInfo.DataFileType;
 import io.trino.plugin.deltalake.transactionlog.statistics.DeltaLakeJsonFileStatistics;
@@ -42,9 +45,6 @@ import io.trino.spi.type.TimestampWithTimeZoneType;
 import io.trino.spi.type.Type;
 import org.apache.parquet.column.statistics.Statistics;
 import org.apache.parquet.format.FileMetaData;
-import org.apache.parquet.hadoop.metadata.BlockMetaData;
-import org.apache.parquet.hadoop.metadata.ColumnChunkMetaData;
-import org.apache.parquet.hadoop.metadata.ParquetMetadata;
 
 import java.io.Closeable;
 import java.io.IOException;
@@ -108,7 +108,7 @@ public final class DeltaLakeWriter
 
         ImmutableMap.Builder<Integer, Function<Block, Block>> coercers = ImmutableMap.builder();
         for (int i = 0; i < columnHandles.size(); i++) {
-            Optional<Function<Block, Block>> coercer = createCoercer(columnHandles.get(i).getBaseType());
+            Optional<Function<Block, Block>> coercer = createCoercer(columnHandles.get(i).baseType());
             if (coercer.isPresent()) {
                 coercers.put(i, coercer.get());
             }
@@ -182,26 +182,30 @@ public final class DeltaLakeWriter
     public DataFileInfo getDataFileInfo()
             throws IOException
     {
-        Map</* lowercase */ String, Type> dataColumnTypes = columnHandles.stream()
-                // Lowercase because the subsequent logic expects lowercase
-                .collect(toImmutableMap(column -> column.getBasePhysicalColumnName().toLowerCase(ENGLISH), DeltaLakeColumnHandle::getBasePhysicalType));
+        Location path = rootTableLocation.appendPath(relativeFilePath);
+        FileMetaData fileMetaData = fileWriter.getFileMetadata();
+        ParquetMetadata parquetMetadata = MetadataReader.createParquetMetadata(fileMetaData, new ParquetDataSourceId(path.toString()));
+
         return new DataFileInfo(
                 relativeFilePath,
                 getWrittenBytes(),
                 creationTime,
                 dataFileType,
                 partitionValues,
-                readStatistics(fileWriter.getFileMetadata(), rootTableLocation.appendPath(relativeFilePath), dataColumnTypes, rowCount));
+                readStatistics(parquetMetadata, columnHandles, rowCount),
+                Optional.empty());
     }
 
-    private static DeltaLakeJsonFileStatistics readStatistics(FileMetaData fileMetaData, Location path, Map</* lowercase */ String, Type> typeForColumn, long rowCount)
+    public static DeltaLakeJsonFileStatistics readStatistics(ParquetMetadata parquetMetadata, List<DeltaLakeColumnHandle> columnHandles, long rowCount)
             throws IOException
     {
-        ParquetMetadata parquetMetadata = MetadataReader.createParquetMetadata(fileMetaData, new ParquetDataSourceId(path.toString()));
+        Map</* lowercase */ String, Type> typeForColumn = columnHandles.stream()
+                // Lowercase because the subsequent logic expects lowercase
+                .collect(toImmutableMap(column -> column.basePhysicalColumnName().toLowerCase(ENGLISH), DeltaLakeColumnHandle::basePhysicalType));
 
-        ImmutableMultimap.Builder<String, ColumnChunkMetaData> metadataForColumn = ImmutableMultimap.builder();
-        for (BlockMetaData blockMetaData : parquetMetadata.getBlocks()) {
-            for (ColumnChunkMetaData columnChunkMetaData : blockMetaData.getColumns()) {
+        ImmutableMultimap.Builder<String, ColumnChunkMetadata> metadataForColumn = ImmutableMultimap.builder();
+        for (BlockMetadata blockMetaData : parquetMetadata.getBlocks()) {
+            for (ColumnChunkMetadata columnChunkMetaData : blockMetaData.columns()) {
                 if (columnChunkMetaData.getPath().size() != 1) {
                     continue; // Only base column stats are supported
                 }
@@ -214,7 +218,7 @@ public final class DeltaLakeWriter
     }
 
     @VisibleForTesting
-    static DeltaLakeJsonFileStatistics mergeStats(Multimap<String, ColumnChunkMetaData> metadataForColumn, Map</* lowercase */ String, Type> typeForColumn, long rowCount)
+    static DeltaLakeJsonFileStatistics mergeStats(Multimap<String, ColumnChunkMetadata> metadataForColumn, Map</* lowercase */ String, Type> typeForColumn, long rowCount)
     {
         Map<String, Optional<Statistics<?>>> statsForColumn = metadataForColumn.keySet().stream()
                 .collect(toImmutableMap(identity(), key -> mergeMetadataList(metadataForColumn.get(key))));
@@ -230,14 +234,14 @@ public final class DeltaLakeWriter
                 Optional.of(nullCount));
     }
 
-    private static Optional<Statistics<?>> mergeMetadataList(Collection<ColumnChunkMetaData> metadataList)
+    private static Optional<Statistics<?>> mergeMetadataList(Collection<ColumnChunkMetadata> metadataList)
     {
         if (hasInvalidStatistics(metadataList)) {
             return Optional.empty();
         }
 
         return metadataList.stream()
-                .<Statistics<?>>map(ColumnChunkMetaData::getStatistics)
+                .<Statistics<?>>map(ColumnChunkMetadata::getStatistics)
                 .reduce((statsA, statsB) -> {
                     statsA.mergeStatistics(statsB);
                     return statsA;

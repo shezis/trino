@@ -104,7 +104,8 @@ statement
         (WITH properties)? AS rootQuery                                #createMaterializedView
     | CREATE (OR REPLACE)? VIEW qualifiedName
         (COMMENT string)?
-        (SECURITY (DEFINER | INVOKER))? AS rootQuery                   #createView
+        (SECURITY (DEFINER | INVOKER))?
+        (WITH properties)? AS rootQuery                                #createView
     | REFRESH MATERIALIZED VIEW qualifiedName                          #refreshMaterializedView
     | DROP MATERIALIZED VIEW (IF EXISTS)? qualifiedName                #dropMaterializedView
     | ALTER MATERIALIZED VIEW (IF EXISTS)? from=qualifiedName
@@ -120,7 +121,7 @@ statement
     | CREATE ROLE name=identifier
         (WITH ADMIN grantor)?
         (IN catalog=identifier)?                                       #createRole
-    | DROP ROLE name=identifier (IN catalog=identifier)?               #dropRole
+    | DROP ROLE (IF EXISTS)? name=identifier (IN catalog=identifier)?  #dropRole
     | GRANT
         privilegeOrRole (',' privilegeOrRole)*
         TO principal (',' principal)*
@@ -156,6 +157,7 @@ statement
     | SHOW CREATE SCHEMA qualifiedName                                 #showCreateSchema
     | SHOW CREATE VIEW qualifiedName                                   #showCreateView
     | SHOW CREATE MATERIALIZED VIEW qualifiedName                      #showCreateMaterializedView
+    | SHOW CREATE FUNCTION qualifiedName                               #showCreateFunction
     | SHOW TABLES ((FROM | IN) qualifiedName)?
         (LIKE pattern=string (ESCAPE escape=string)?)?                 #showTables
     | SHOW SCHEMAS ((FROM | IN) identifier)?
@@ -987,7 +989,7 @@ nonReserved
     | BEGIN | BERNOULLI | BOTH
     | CALL | CALLED | CASCADE | CATALOG | CATALOGS | COLUMN | COLUMNS | COMMENT | COMMIT | COMMITTED | CONDITIONAL | COPARTITION | COUNT | CURRENT
     | DATA | DATE | DAY | DECLARE | DEFAULT | DEFINE | DEFINER | DENY | DESC | DESCRIPTOR | DETERMINISTIC | DISTRIBUTED | DO | DOUBLE
-    | ELSEIF | EMPTY | ENCODING | ERROR | EXCLUDING | EXPLAIN
+    | ELSEIF | EMPTY | ENCODING | ERROR | EXCLUDING | EXECUTE | EXPLAIN
     | FETCH | FILTER | FINAL | FIRST | FOLLOWING | FORMAT | FUNCTION | FUNCTIONS
     | GRACE | GRANT | GRANTED | GRANTS | GRAPHVIZ | GROUPS
     | HOUR

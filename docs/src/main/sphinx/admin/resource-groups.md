@@ -132,12 +132,11 @@ are reflected automatically for incoming queries.
   {ref}`scheduleweight-example`.
 
 - `jmxExport` (optional): If true, group statistics are exported to JMX for monitoring.
-  Defaults to `true`.
+  Defaults to `false`.
 
 - `subGroups` (optional): list of sub-groups.
 
 (scheduleweight-example)=
-
 ### Scheduling weight example
 
 Schedule weighting is a method of assigning a priority to a resource. Sub-groups
@@ -162,7 +161,7 @@ evenly and each receive 50% of the queries in a given timeframe.
 The selector rules for pattern matching use Java's regular expression
 capabilities. Java implements regular expressions through the `java.util.regex`
 package. For more information, see the [Java
-documentation](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/regex/Pattern.html).
+documentation](https://docs.oracle.com/en/java/javase/22/docs/api/java.base/java/util/regex/Pattern.html).
 
 - `user` (optional): Java regex to match against user name.
 
@@ -186,6 +185,9 @@ documentation](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java
   client-provided tags associated with the query.
 
 - `group` (required): the group these queries will run in.
+
+All rules within a single selector are combined using a logical `AND`. Therefore
+all rules must match for a selector to be applied.
 
 Selectors are processed sequentially and the first one that matches will be used.
 

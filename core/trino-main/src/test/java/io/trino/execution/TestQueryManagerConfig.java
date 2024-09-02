@@ -29,6 +29,8 @@ import static io.airlift.units.DataSize.Unit.KILOBYTE;
 import static io.airlift.units.DataSize.Unit.MEGABYTE;
 import static io.trino.execution.QueryManagerConfig.AVAILABLE_HEAP_MEMORY;
 import static io.trino.execution.QueryManagerConfig.FAULT_TOLERANT_EXECUTION_MAX_PARTITION_COUNT_LIMIT;
+import static java.lang.Math.max;
+import static java.lang.Math.round;
 import static java.util.concurrent.TimeUnit.DAYS;
 import static java.util.concurrent.TimeUnit.HOURS;
 import static java.util.concurrent.TimeUnit.MINUTES;
@@ -58,7 +60,7 @@ public class TestQueryManagerConfig
                 .setQueryExecutorPoolSize(1000)
                 .setMaxStateMachineCallbackThreads(5)
                 .setMaxSplitManagerCallbackThreads(100)
-                .setRemoteTaskMaxErrorDuration(new Duration(5, MINUTES))
+                .setRemoteTaskMaxErrorDuration(new Duration(1, MINUTES))
                 .setRemoteTaskMaxCallbackThreads(1000)
                 .setQueryExecutionPolicy("phased")
                 .setQueryMaxRunTime(new Duration(100, DAYS))
@@ -66,6 +68,7 @@ public class TestQueryManagerConfig
                 .setQueryMaxPlanningTime(new Duration(10, MINUTES))
                 .setQueryMaxCpuTime(new Duration(1_000_000_000, DAYS))
                 .setQueryReportedRuleStatsLimit(10)
+                .setDispatcherQueryPoolSize(max(50, Runtime.getRuntime().availableProcessors() * 10))
                 .setQueryMaxScanPhysicalBytes(null)
                 .setRequiredWorkers(1)
                 .setRequiredWorkersMaxWait(new Duration(5, MINUTES))
@@ -95,8 +98,8 @@ public class TestQueryManagerConfig
                 .setFaultTolerantExecutionHashDistributionWriteTasksToNodesMinRatio(2.0)
                 .setFaultTolerantExecutionHashDistributionWriteTaskTargetMaxCount(2000)
                 .setFaultTolerantExecutionStandardSplitSize(DataSize.of(64, MEGABYTE))
-                .setFaultTolerantExecutionMaxTaskSplitCount(256)
-                .setFaultTolerantExecutionTaskDescriptorStorageMaxMemory(DataSize.ofBytes(Math.round(AVAILABLE_HEAP_MEMORY * 0.15)))
+                .setFaultTolerantExecutionMaxTaskSplitCount(2048)
+                .setFaultTolerantExecutionTaskDescriptorStorageMaxMemory(DataSize.ofBytes(round(AVAILABLE_HEAP_MEMORY * 0.15)))
                 .setFaultTolerantExecutionMaxPartitionCount(50)
                 .setFaultTolerantExecutionMinPartitionCount(4)
                 .setFaultTolerantExecutionMinPartitionCountForWrite(50)
@@ -109,6 +112,10 @@ public class TestQueryManagerConfig
                 .setFaultTolerantExecutionSmallStageSourceSizeMultiplier(1.2)
                 .setFaultTolerantExecutionSmallStageRequireNoMorePartitions(false)
                 .setFaultTolerantExecutionStageEstimationForEagerParentEnabled(true)
+                .setFaultTolerantExecutionAdaptiveQueryPlanningEnabled(true)
+                .setFaultTolerantExecutionAdaptiveJoinReorderingEnabled(true)
+                .setFaultTolerantExecutionAdaptiveJoinReorderingMinSizeThreshold(DataSize.of(5, GIGABYTE))
+                .setFaultTolerantExecutionAdaptiveJoinReorderingSizeDifferenceRatio(1.5)
                 .setMaxWriterTaskCount(100));
     }
 
@@ -134,7 +141,7 @@ public class TestQueryManagerConfig
                 .put("query.executor-pool-size", "111")
                 .put("query.max-state-machine-callback-threads", "112")
                 .put("query.max-split-manager-callback-threads", "113")
-                .put("query.remote-task.max-error-duration", "60s")
+                .put("query.remote-task.max-error-duration", "37s")
                 .put("query.remote-task.max-callback-threads", "10")
                 .put("query.execution-policy", "foo-bar-execution-policy")
                 .put("query.max-run-time", "2h")
@@ -142,6 +149,7 @@ public class TestQueryManagerConfig
                 .put("query.max-planning-time", "1h")
                 .put("query.max-cpu-time", "2d")
                 .put("query.reported-rule-stats-limit", "50")
+                .put("query.dispatcher-query-pool-size", "151")
                 .put("query.max-scan-physical-bytes", "1kB")
                 .put("query-manager.required-workers", "333")
                 .put("query-manager.required-workers-max-wait", "33m")
@@ -186,6 +194,10 @@ public class TestQueryManagerConfig
                 .put("fault-tolerant-execution-small-stage-source-size-multiplier", "1.6")
                 .put("fault-tolerant-execution-small-stage-require-no-more-partitions", "true")
                 .put("fault-tolerant-execution-stage-estimation-for-eager-parent-enabled", "false")
+                .put("fault-tolerant-execution-adaptive-query-planning-enabled", "false")
+                .put("fault-tolerant-execution-adaptive-join-reordering-enabled", "false")
+                .put("fault-tolerant-execution-adaptive-join-reordering-min-size-threshold", "1GB")
+                .put("fault-tolerant-execution-adaptive-join-reordering-size-difference-ratio", "2")
                 .buildOrThrow();
 
         QueryManagerConfig expected = new QueryManagerConfig()
@@ -207,7 +219,7 @@ public class TestQueryManagerConfig
                 .setQueryExecutorPoolSize(111)
                 .setMaxStateMachineCallbackThreads(112)
                 .setMaxSplitManagerCallbackThreads(113)
-                .setRemoteTaskMaxErrorDuration(new Duration(60, SECONDS))
+                .setRemoteTaskMaxErrorDuration(new Duration(37, SECONDS))
                 .setRemoteTaskMaxCallbackThreads(10)
                 .setQueryExecutionPolicy("foo-bar-execution-policy")
                 .setQueryMaxRunTime(new Duration(2, HOURS))
@@ -215,6 +227,7 @@ public class TestQueryManagerConfig
                 .setQueryMaxPlanningTime(new Duration(1, HOURS))
                 .setQueryMaxCpuTime(new Duration(2, DAYS))
                 .setQueryReportedRuleStatsLimit(50)
+                .setDispatcherQueryPoolSize(151)
                 .setQueryMaxScanPhysicalBytes(DataSize.of(1, KILOBYTE))
                 .setRequiredWorkers(333)
                 .setRequiredWorkersMaxWait(new Duration(33, MINUTES))
@@ -258,6 +271,10 @@ public class TestQueryManagerConfig
                 .setFaultTolerantExecutionSmallStageSourceSizeMultiplier(1.6)
                 .setFaultTolerantExecutionSmallStageRequireNoMorePartitions(true)
                 .setFaultTolerantExecutionStageEstimationForEagerParentEnabled(false)
+                .setFaultTolerantExecutionAdaptiveQueryPlanningEnabled(false)
+                .setFaultTolerantExecutionAdaptiveJoinReorderingEnabled(false)
+                .setFaultTolerantExecutionAdaptiveJoinReorderingMinSizeThreshold(DataSize.of(1, GIGABYTE))
+                .setFaultTolerantExecutionAdaptiveJoinReorderingSizeDifferenceRatio(2.0)
                 .setMaxWriterTaskCount(101);
 
         assertFullMapping(properties, expected);

@@ -25,6 +25,13 @@
         <artifact id="${project.groupId}:trino-server-main:${project.version}" />
     </artifactSet>
 
+    <!-- Configuration Plugins -->
+    <artifactSet to="secrets-plugin/keystore-secrets-plugin">
+        <artifact id="io.airlift:secrets-keystore-plugin:zip:${dep.packaging.version}">
+            <unpack />
+        </artifact>
+    </artifactSet>
+
     <!-- Plugins -->
     <artifactSet to="plugin/accumulo">
         <artifact id="${project.groupId}:trino-accumulo:zip:${project.version}">
@@ -89,6 +96,12 @@
         </artifact>
     </artifactSet>
 
+    <artifactSet to="plugin/exasol">
+        <artifact id="${project.groupId}:trino-exasol:zip:${project.version}">
+            <unpack />
+        </artifact>
+    </artifactSet>
+
     <artifactSet to="plugin/exchange-filesystem">
         <artifact id="${project.groupId}:trino-exchange-filesystem:zip:${project.version}">
             <unpack />
@@ -128,6 +141,12 @@
         </artifact>
     </artifactSet>
 
+    <artifactSet to="plugin/http-server-event-listener">
+        <artifact id="${project.groupId}:trino-http-server-event-listener:zip:${project.version}">
+            <unpack />
+        </artifact>
+    </artifactSet>
+
     <artifactSet to="plugin/hudi">
         <artifact id="${project.groupId}:trino-hudi:zip:${project.version}">
             <unpack />
@@ -160,6 +179,12 @@
 
     <artifactSet to="plugin/kafka">
         <artifact id="${project.groupId}:trino-kafka:zip:${project.version}">
+            <unpack />
+        </artifact>
+    </artifactSet>
+
+    <artifactSet to="plugin/kafka-event-listener">
+        <artifact id="${project.groupId}:trino-kafka-event-listener:zip:${project.version}">
             <unpack />
         </artifact>
     </artifactSet>
@@ -214,6 +239,12 @@
 
     <artifactSet to="plugin/mysql-event-listener">
         <artifact id="${project.groupId}:trino-mysql-event-listener:zip:${project.version}">
+            <unpack />
+        </artifact>
+    </artifactSet>
+
+    <artifactSet to="plugin/openlineage">
+        <artifact id="${project.groupId}:trino-openlineage:zip:${project.version}">
             <unpack />
         </artifact>
     </artifactSet>
@@ -292,6 +323,12 @@
 
     <artifactSet to="plugin/singlestore">
         <artifact id="${project.groupId}:trino-singlestore:zip:${project.version}">
+            <unpack />
+        </artifact>
+    </artifactSet>
+
+    <artifactSet to="plugin/snowflake">
+        <artifact id="${project.groupId}:trino-snowflake:zip:${project.version}">
             <unpack />
         </artifact>
     </artifactSet>

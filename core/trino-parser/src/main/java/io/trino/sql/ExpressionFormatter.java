@@ -24,7 +24,6 @@ import io.trino.sql.tree.AstVisitor;
 import io.trino.sql.tree.AtTimeZone;
 import io.trino.sql.tree.BetweenPredicate;
 import io.trino.sql.tree.BinaryLiteral;
-import io.trino.sql.tree.BindExpression;
 import io.trino.sql.tree.BooleanLiteral;
 import io.trino.sql.tree.Cast;
 import io.trino.sql.tree.CoalesceExpression;
@@ -94,7 +93,6 @@ import io.trino.sql.tree.SortItem;
 import io.trino.sql.tree.StringLiteral;
 import io.trino.sql.tree.SubqueryExpression;
 import io.trino.sql.tree.SubscriptExpression;
-import io.trino.sql.tree.SymbolReference;
 import io.trino.sql.tree.Trim;
 import io.trino.sql.tree.TryExpression;
 import io.trino.sql.tree.TypeParameter;
@@ -125,33 +123,24 @@ import static java.util.stream.Collectors.toList;
 
 public final class ExpressionFormatter
 {
-    private static final ThreadLocal<DecimalFormat> doubleFormatter = ThreadLocal.withInitial(
+    private static final ThreadLocal<DecimalFormat> DOUBLE_FORMATTER = ThreadLocal.withInitial(
             () -> new DecimalFormat("0.###################E0###", new DecimalFormatSymbols(Locale.US)));
 
     private ExpressionFormatter() {}
 
     public static String formatExpression(Expression expression)
     {
-        return new Formatter(Optional.empty(), Optional.empty()).process(expression, null);
-    }
-
-    private static String formatIdentifier(String s)
-    {
-        return '"' + s.replace("\"", "\"\"") + '"';
+        return new Formatter(Optional.empty()).process(expression, null);
     }
 
     public static class Formatter
             extends AstVisitor<String, Void>
     {
         private final Optional<Function<Literal, String>> literalFormatter;
-        private final Optional<Function<SymbolReference, String>> symbolReferenceFormatter;
 
-        public Formatter(
-                Optional<Function<Literal, String>> literalFormatter,
-                Optional<Function<SymbolReference, String>> symbolReferenceFormatter)
+        public Formatter(Optional<Function<Literal, String>> literalFormatter)
         {
             this.literalFormatter = requireNonNull(literalFormatter, "literalFormatter is null");
-            this.symbolReferenceFormatter = requireNonNull(symbolReferenceFormatter, "symbolReferenceFormatter is null");
         }
 
         @Override
@@ -209,7 +198,7 @@ public final class ExpressionFormatter
         @Override
         protected String visitTrim(Trim node, Void context)
         {
-            if (!node.getTrimCharacter().isPresent()) {
+            if (node.getTrimCharacter().isEmpty()) {
                 return "trim(%s FROM %s)".formatted(node.getSpecification(), process(node.getTrimSource(), context));
             }
 
@@ -341,7 +330,7 @@ public final class ExpressionFormatter
         {
             return literalFormatter
                     .map(formatter -> formatter.apply(node))
-                    .orElseGet(() -> doubleFormatter.get().format(node.getValue()));
+                    .orElseGet(() -> DOUBLE_FORMATTER.get().format(node.getValue()));
         }
 
         @Override
@@ -416,15 +405,6 @@ public final class ExpressionFormatter
         }
 
         @Override
-        protected String visitSymbolReference(SymbolReference node, Void context)
-        {
-            if (symbolReferenceFormatter.isPresent()) {
-                return symbolReferenceFormatter.get().apply(node);
-            }
-            return formatIdentifier(node.getName());
-        }
-
-        @Override
         protected String visitDereferenceExpression(DereferenceExpression node, Void context)
         {
             String baseString = process(node.getBase(), context);
@@ -469,12 +449,11 @@ public final class ExpressionFormatter
 
             builder.append(')');
 
-            node.getNullTreatment().ifPresent(nullTreatment -> {
-                builder.append(switch (nullTreatment) {
-                    case IGNORE -> " IGNORE NULLS";
-                    case RESPECT -> " RESPECT NULLS";
-                });
-            });
+            node.getNullTreatment().ifPresent(nullTreatment ->
+                    builder.append(switch (nullTreatment) {
+                        case IGNORE -> " IGNORE NULLS";
+                        case RESPECT -> " RESPECT NULLS";
+                    }));
 
             if (node.getFilter().isPresent()) {
                 builder.append(" FILTER ").append(visitFilter(node.getFilter().get(), context));
@@ -502,21 +481,6 @@ public final class ExpressionFormatter
             Joiner.on(", ").appendTo(builder, node.getArguments());
             builder.append(") -> ");
             builder.append(process(node.getBody(), context));
-            return builder.toString();
-        }
-
-        @Override
-        protected String visitBindExpression(BindExpression node, Void context)
-        {
-            StringBuilder builder = new StringBuilder();
-
-            builder.append("\"$INTERNAL$BIND\"(");
-            for (Expression value : node.getValues()) {
-                builder.append(process(value, context))
-                        .append(", ");
-            }
-            builder.append(process(node.getFunction(), context))
-                    .append(")");
             return builder.toString();
         }
 
@@ -873,7 +837,7 @@ public final class ExpressionFormatter
             if (node.getReturnedType().isPresent()) {
                 builder.append(" RETURNING ")
                         .append(process(node.getReturnedType().get()))
-                        .append(node.getOutputFormat().map(string -> " FORMAT " + string).orElse(""));
+                        .append(node.getOutputFormat().map(value -> " FORMAT " + value).orElse(""));
             }
 
             builder.append(switch (node.getWrapperBehavior()) {
@@ -917,7 +881,7 @@ public final class ExpressionFormatter
             if (node.getReturnedType().isPresent()) {
                 builder.append(" RETURNING ")
                         .append(process(node.getReturnedType().get()))
-                        .append(node.getOutputFormat().map(string -> " FORMAT " + string).orElse(""));
+                        .append(node.getOutputFormat().map(value -> " FORMAT " + value).orElse(""));
             }
 
             builder.append(")");
@@ -942,7 +906,7 @@ public final class ExpressionFormatter
             if (node.getReturnedType().isPresent()) {
                 builder.append(" RETURNING ")
                         .append(process(node.getReturnedType().get()))
-                        .append(node.getOutputFormat().map(string -> " FORMAT " + string).orElse(""));
+                        .append(node.getOutputFormat().map(value -> " FORMAT " + value).orElse(""));
             }
 
             builder.append(")");
@@ -1127,9 +1091,9 @@ public final class ExpressionFormatter
     {
         return switch (frameBound.getType()) {
             case UNBOUNDED_PRECEDING -> "UNBOUNDED PRECEDING";
-            case PRECEDING -> formatExpression(frameBound.getValue().get()) + " PRECEDING";
+            case PRECEDING -> formatExpression(frameBound.getValue().orElseThrow()) + " PRECEDING";
             case CURRENT_ROW -> "CURRENT ROW";
-            case FOLLOWING -> formatExpression(frameBound.getValue().get()) + " FOLLOWING";
+            case FOLLOWING -> formatExpression(frameBound.getValue().orElseThrow()) + " FOLLOWING";
             case UNBOUNDED_FOLLOWING -> "UNBOUNDED FOLLOWING";
         };
     }
@@ -1141,11 +1105,11 @@ public final class ExpressionFormatter
             case NEXT -> "AFTER MATCH SKIP TO NEXT ROW";
             case LAST -> {
                 checkState(skipTo.getIdentifier().isPresent(), "missing identifier in AFTER MATCH SKIP TO LAST");
-                yield "AFTER MATCH SKIP TO LAST " + formatExpression(skipTo.getIdentifier().get());
+                yield "AFTER MATCH SKIP TO LAST " + formatExpression(skipTo.getIdentifier().orElseThrow());
             }
             case FIRST -> {
                 checkState(skipTo.getIdentifier().isPresent(), "missing identifier in AFTER MATCH SKIP TO FIRST");
-                yield "AFTER MATCH SKIP TO FIRST " + formatExpression(skipTo.getIdentifier().get());
+                yield "AFTER MATCH SKIP TO FIRST " + formatExpression(skipTo.getIdentifier().orElseThrow());
             }
         };
     }
@@ -1177,11 +1141,6 @@ public final class ExpressionFormatter
             return result;
         })
         .collect(joining(", "));
-    }
-
-    private static boolean isAsciiPrintable(int codePoint)
-    {
-        return codePoint >= 0x20 && codePoint < 0x7F;
     }
 
     private static String formatGroupingSet(List<Expression> groupingSet)

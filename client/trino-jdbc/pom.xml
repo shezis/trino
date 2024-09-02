@@ -5,7 +5,7 @@
     <parent>
         <groupId>io.trino</groupId>
         <artifactId>trino-root</artifactId>
-        <version>440-SNAPSHOT</version>
+        <version>456-SNAPSHOT</version>
         <relativePath>../../pom.xml</relativePath>
     </parent>
 
@@ -13,7 +13,6 @@
     <description>Trino - JDBC driver</description>
 
     <properties>
-        <air.main.basedir>${project.parent.basedir}</air.main.basedir>
         <project.build.targetJdk>8</project.build.targetJdk>
         <shadeBase>io.trino.jdbc.\$internal</shadeBase>
     </properties>
@@ -77,6 +76,8 @@
         <dependency>
             <groupId>jakarta.annotation</groupId>
             <artifactId>jakarta.annotation-api</artifactId>
+            <!-- JDK8 support dropped by version 3.0.0+ -->
+            <version>2.1.1</version>
         </dependency>
 
         <dependency>
@@ -98,7 +99,7 @@
 
         <dependency>
             <groupId>com.oracle.database.jdbc</groupId>
-            <artifactId>ojdbc10</artifactId>
+            <artifactId>ojdbc11</artifactId>
             <scope>test</scope>
         </dependency>
 
@@ -230,6 +231,12 @@
 
         <dependency>
             <groupId>io.trino</groupId>
+            <artifactId>trino-plugin-toolkit</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>io.trino</groupId>
             <artifactId>trino-spi</artifactId>
             <scope>test</scope>
         </dependency>
@@ -253,6 +260,12 @@
         </dependency>
 
         <dependency>
+            <groupId>jakarta.servlet</groupId>
+            <artifactId>jakarta.servlet-api</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <dependency>
             <groupId>jakarta.ws.rs</groupId>
             <artifactId>jakarta.ws.rs-api</artifactId>
             <scope>test</scope>
@@ -261,12 +274,6 @@
         <dependency>
             <groupId>org.assertj</groupId>
             <artifactId>assertj-core</artifactId>
-            <scope>test</scope>
-        </dependency>
-
-        <dependency>
-            <groupId>org.eclipse.jetty.toolchain</groupId>
-            <artifactId>jetty-jakarta-servlet-api</artifactId>
             <scope>test</scope>
         </dependency>
 
@@ -361,6 +368,21 @@
         <plugins>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-jar-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <id>non-shaded</id>
+                        <goals>
+                            <goal>jar</goal>
+                        </goals>
+                        <configuration>
+                            <classifier>non-shaded</classifier>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-surefire-plugin</artifactId>
                 <dependencies>
                     <!-- allow both JUnit and TestNG -->
@@ -382,6 +404,7 @@
                 <artifactId>maven-shade-plugin</artifactId>
                 <executions>
                     <execution>
+                        <id>shaded</id>
                         <goals>
                             <goal>shade</goal>
                         </goals>
@@ -415,6 +438,10 @@
                                     <shadedPattern>${shadeBase}.jakarta.annotation</shadedPattern>
                                 </relocation>
                                 <relocation>
+                                    <pattern>net.bytebuddy</pattern>
+                                    <shadedPattern>${shadeBase}.net.bytebuddy</shadedPattern>
+                                </relocation>
+                                <relocation>
                                     <pattern>org.joda.time</pattern>
                                     <shadedPattern>${shadeBase}.joda.time</shadedPattern>
                                 </relocation>
@@ -429,6 +456,10 @@
                                 <relocation>
                                     <pattern>io.opentelemetry.instrumentation</pattern>
                                     <shadedPattern>${shadeBase}.opentelemetry.instrumentation</shadedPattern>
+                                </relocation>
+                                <relocation>
+                                    <pattern>io.opentelemetry.api.incubator</pattern>
+                                    <shadedPattern>${shadeBase}.opentelemetry.api.incubator</shadedPattern>
                                 </relocation>
                                 <relocation>
                                     <pattern>okio</pattern>
@@ -457,6 +488,7 @@
                                         <exclude>org/intellij/**</exclude>
                                         <exclude>com/google/errorprone/**</exclude>
                                         <exclude>META-INF/maven/**</exclude>
+                                        <exclude>META-INF/licenses/**</exclude>
                                         <exclude>META-INF/services/com.fasterxml.**</exclude>
                                         <exclude>META-INF/proguard/**</exclude>
                                         <exclude>LICENSE</exclude>

@@ -5,7 +5,7 @@
     <parent>
         <groupId>io.trino</groupId>
         <artifactId>trino-root</artifactId>
-        <version>440-SNAPSHOT</version>
+        <version>456-SNAPSHOT</version>
         <relativePath>../../pom.xml</relativePath>
     </parent>
 
@@ -14,9 +14,8 @@
     <description>Trino - Iceberg connector</description>
 
     <properties>
-        <air.main.basedir>${project.parent.basedir}</air.main.basedir>
-        <!-- Nessie version (matching to Iceberg release) must be bumped along with Iceberg version bump to avoid compatibility issues -->
-        <dep.nessie.version>0.71.1</dep.nessie.version>
+        <!-- Nessie version (compatible with Iceberg release) must be bumped along with Iceberg version bump to avoid compatibility issues -->
+        <dep.nessie.version>0.95.0</dep.nessie.version>
     </properties>
 
     <dependencies>
@@ -139,7 +138,17 @@
 
         <dependency>
             <groupId>io.trino</groupId>
+            <artifactId>trino-hive-formats</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>io.trino</groupId>
             <artifactId>trino-memory-context</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>io.trino</groupId>
+            <artifactId>trino-metastore</artifactId>
         </dependency>
 
         <dependency>
@@ -178,6 +187,11 @@
         </dependency>
 
         <dependency>
+            <groupId>net.snowflake</groupId>
+            <artifactId>snowflake-jdbc</artifactId>
+        </dependency>
+
+        <dependency>
             <groupId>org.apache.avro</groupId>
             <artifactId>avro</artifactId>
         </dependency>
@@ -185,13 +199,13 @@
         <dependency>
             <groupId>org.apache.datasketches</groupId>
             <artifactId>datasketches-java</artifactId>
-            <version>5.0.1</version>
+            <version>6.0.0</version>
         </dependency>
 
         <dependency>
             <groupId>org.apache.datasketches</groupId>
             <artifactId>datasketches-memory</artifactId>
-            <version>2.2.0</version>
+            <version>2.2.1</version>
         </dependency>
 
         <dependency>
@@ -216,6 +230,11 @@
         </dependency>
 
         <dependency>
+            <groupId>org.apache.iceberg</groupId>
+            <artifactId>iceberg-snowflake</artifactId>
+        </dependency>
+
+        <dependency>
             <groupId>org.apache.parquet</groupId>
             <artifactId>parquet-column</artifactId>
         </dependency>
@@ -228,6 +247,12 @@
         <dependency>
             <groupId>org.apache.parquet</groupId>
             <artifactId>parquet-format-structures</artifactId>
+            <exclusions>
+                <exclusion>
+                    <groupId>javax.annotation</groupId>
+                    <artifactId>javax.annotation-api</artifactId>
+                </exclusion>
+            </exclusions>
         </dependency>
 
         <dependency>
@@ -301,6 +326,12 @@
 
         <dependency>
             <groupId>io.airlift</groupId>
+            <artifactId>http-client</artifactId>
+            <scope>runtime</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>io.airlift</groupId>
             <artifactId>log-manager</artifactId>
             <scope>runtime</scope>
         </dependency>
@@ -330,16 +361,20 @@
         </dependency>
 
         <dependency>
+            <groupId>jakarta.servlet</groupId>
+            <artifactId>jakarta.servlet-api</artifactId>
+            <scope>runtime</scope>
+        </dependency>
+
+        <dependency>
             <groupId>org.apache.httpcomponents.client5</groupId>
             <artifactId>httpclient5</artifactId>
-            <version>5.2.3</version>
             <scope>runtime</scope>
         </dependency>
 
         <dependency>
             <groupId>org.apache.httpcomponents.core5</groupId>
             <artifactId>httpcore5</artifactId>
-            <version>5.2.4</version>
             <scope>runtime</scope>
         </dependency>
 
@@ -347,12 +382,6 @@
             <groupId>org.apache.iceberg</groupId>
             <artifactId>iceberg-bundled-guava</artifactId>
             <version>${dep.iceberg.version}</version>
-            <scope>runtime</scope>
-        </dependency>
-
-        <dependency>
-            <groupId>org.eclipse.jetty.toolchain</groupId>
-            <artifactId>jetty-jakarta-servlet-api</artifactId>
             <scope>runtime</scope>
         </dependency>
 
@@ -610,7 +639,7 @@
         <dependency>
             <groupId>org.keycloak</groupId>
             <artifactId>keycloak-core</artifactId>
-            <version>23.0.3</version>
+            <version>24.0.5</version>
             <scope>test</scope>
         </dependency>
 
@@ -623,6 +652,20 @@
         <dependency>
             <groupId>org.testcontainers</groupId>
             <artifactId>testcontainers</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <dependency>
+            <!-- Allow running tests when locally `aws sso login` is required to access AWS services -->
+            <groupId>software.amazon.awssdk</groupId>
+            <artifactId>sso</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <dependency>
+            <!-- Allow running tests when locally `aws sso login` is required to access AWS services -->
+            <groupId>software.amazon.awssdk</groupId>
+            <artifactId>ssooidc</artifactId>
             <scope>test</scope>
         </dependency>
     </dependencies>
@@ -653,6 +696,7 @@
                     <ignoredResourcePatterns>
                         <ignoredResourcePattern>iceberg-build.properties</ignoredResourcePattern>
                         <ignoredResourcePattern>mozilla/public-suffix-list.txt</ignoredResourcePattern>
+                        <ignoredResourcePattern>mime.types</ignoredResourcePattern>
                     </ignoredResourcePatterns>
                 </configuration>
             </plugin>
@@ -686,6 +730,8 @@
                                 <exclude>**/TestIcebergGcsConnectorSmokeTest.java</exclude>
                                 <exclude>**/TestIcebergAbfsConnectorSmokeTest.java</exclude>
                                 <exclude>**/Test*FailureRecoveryTest.java</exclude>
+                                <exclude>**/TestIcebergSnowflakeCatalogConnectorSmokeTest.java</exclude>
+                                <exclude>**/TestTrinoSnowflakeCatalog.java</exclude>
                             </excludes>
                         </configuration>
                     </plugin>
@@ -748,6 +794,8 @@
                                 <include>**/TestIcebergS3AndGlueMetastoreTest.java</include>
                                 <include>**/TestIcebergGcsConnectorSmokeTest.java</include>
                                 <include>**/TestIcebergAbfsConnectorSmokeTest.java</include>
+                                <include>**/TestIcebergSnowflakeCatalogConnectorSmokeTest.java</include>
+                                <include>**/TestTrinoSnowflakeCatalog.java</include>
                             </includes>
                         </configuration>
                     </plugin>

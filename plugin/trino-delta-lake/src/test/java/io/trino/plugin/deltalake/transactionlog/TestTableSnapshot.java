@@ -97,7 +97,8 @@ public class TestTableSnapshot
                             tableLocation,
                             parquetReaderOptions,
                             true,
-                            domainCompactionThreshold));
+                            domainCompactionThreshold,
+                            Optional.empty()));
                 },
                 ImmutableMultiset.<FileOperation>builder()
                         .addCopies(new FileOperation("_last_checkpoint", "InputFile.newStream"), 1)
@@ -127,7 +128,8 @@ public class TestTableSnapshot
                 tableLocation,
                 parquetReaderOptions,
                 true,
-                domainCompactionThreshold);
+                domainCompactionThreshold,
+                Optional.empty());
         TestingConnectorContext context = new TestingConnectorContext();
         TypeManager typeManager = context.getTypeManager();
         TransactionLogAccess transactionLogAccess = new TransactionLogAccess(
@@ -137,7 +139,7 @@ public class TestTableSnapshot
                 new FileFormatDataSourceStats(),
                 tracingFileSystemFactory,
                 new ParquetReaderConfig());
-        MetadataEntry metadataEntry = transactionLogAccess.getMetadataEntry(tableSnapshot, SESSION);
+        MetadataEntry metadataEntry = transactionLogAccess.getMetadataEntry(SESSION, tableSnapshot);
         ProtocolEntry protocolEntry = transactionLogAccess.getProtocolEntry(SESSION, tableSnapshot);
         tableSnapshot.setCachedMetadata(Optional.of(metadataEntry));
         try (Stream<DeltaLakeTransactionLogEntry> stream = tableSnapshot.getCheckpointTransactionLogEntries(
@@ -254,7 +256,8 @@ public class TestTableSnapshot
                 tableLocation,
                 parquetReaderOptions,
                 true,
-                domainCompactionThreshold);
+                domainCompactionThreshold,
+                Optional.empty());
         assertThat(tableSnapshot.getVersion()).isEqualTo(13L);
     }
 

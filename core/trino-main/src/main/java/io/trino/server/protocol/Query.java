@@ -34,16 +34,19 @@ import io.trino.client.QueryResults;
 import io.trino.exchange.ExchangeDataSource;
 import io.trino.exchange.ExchangeManagerRegistry;
 import io.trino.exchange.LazyExchangeDataSource;
+import io.trino.execution.BasicStageInfo;
 import io.trino.execution.QueryExecution;
 import io.trino.execution.QueryInfo;
 import io.trino.execution.QueryManager;
 import io.trino.execution.QueryState;
 import io.trino.execution.StageId;
-import io.trino.execution.StageInfo;
 import io.trino.execution.buffer.PageDeserializer;
 import io.trino.execution.buffer.PagesSerdeFactory;
 import io.trino.memory.context.SimpleLocalMemoryContext;
 import io.trino.operator.DirectExchangeClientSupplier;
+import io.trino.server.ExternalUriInfo;
+import io.trino.server.GoneException;
+import io.trino.server.ResultQueryInfo;
 import io.trino.spi.ErrorCode;
 import io.trino.spi.Page;
 import io.trino.spi.QueryId;
@@ -53,9 +56,7 @@ import io.trino.spi.security.SelectedRole;
 import io.trino.spi.type.Type;
 import io.trino.transaction.TransactionId;
 import io.trino.util.Ciphers;
-import jakarta.ws.rs.WebApplicationException;
-import jakarta.ws.rs.core.Response;
-import jakarta.ws.rs.core.UriInfo;
+import jakarta.ws.rs.NotFoundException;
 
 import java.net.URI;
 import java.util.List;
@@ -201,7 +202,7 @@ class Query
             // This listener also makes sure the exchange client is always properly closed upon query failure.
             if (state.isDone() || state == FINISHING) {
                 QueryInfo queryInfo = queryManager.getFullQueryInfo(result.getQueryId());
-                result.closeExchangeIfNecessary(queryInfo);
+                result.closeExchangeIfNecessary(new ResultQueryInfo(queryInfo));
             }
         });
 
@@ -277,7 +278,7 @@ class Query
         return queryManager.getFullQueryInfo(queryId);
     }
 
-    public ListenableFuture<QueryResultsResponse> waitForResults(long token, UriInfo uriInfo, Duration wait, DataSize targetResultSize)
+    public ListenableFuture<QueryResultsResponse> waitForResults(long token, ExternalUriInfo externalUriInfo, Duration wait, DataSize targetResultSize)
     {
         ListenableFuture<Void> futureStateChange;
         synchronized (this) {
@@ -295,7 +296,7 @@ class Query
             futureStateChange = addTimeout(futureStateChange, () -> null, wait, timeoutExecutor);
         }
         // when state changes, fetch the next result
-        return Futures.transform(futureStateChange, ignored -> getNextResult(token, uriInfo, targetResultSize), resultsProcessorExecutor);
+        return Futures.transform(futureStateChange, _ -> getNextResult(token, externalUriInfo, targetResultSize), resultsProcessorExecutor);
     }
 
     public void markResultsConsumedIfReady()
@@ -381,24 +382,24 @@ class Query
 
         // if this is a result before the lastResult, the data is gone
         if (token < lastToken) {
-            throw new WebApplicationException(Response.Status.GONE);
+            throw new GoneException();
         }
 
         // if this is a request for a result after the end of the stream, return not found
         if (nextToken.isEmpty()) {
-            throw new WebApplicationException(Response.Status.NOT_FOUND);
+            throw new NotFoundException();
         }
 
         // if this is not a request for the next results, return not found
         if (token != nextToken.getAsLong()) {
             // unknown token
-            throw new WebApplicationException(Response.Status.NOT_FOUND);
+            throw new NotFoundException();
         }
 
         return Optional.empty();
     }
 
-    private synchronized QueryResultsResponse getNextResult(long token, UriInfo uriInfo, DataSize targetResultSize)
+    private synchronized QueryResultsResponse getNextResult(long token, ExternalUriInfo externalUriInfo, DataSize targetResultSize)
     {
         // check if the result for the token have already been created
         Optional<QueryResults> cachedResult = getCachedResult(token);
@@ -411,10 +412,10 @@ class Query
 
         // get the query info before returning
         // force update if query manager is closed
-        QueryInfo queryInfo = queryManager.getFullQueryInfo(queryId);
+        ResultQueryInfo queryInfo = queryManager.getResultQueryInfo(queryId);
         queryManager.recordHeartbeat(queryId);
 
-        boolean isStarted = queryInfo.getState().ordinal() > QueryState.STARTING.ordinal();
+        boolean isStarted = queryInfo.state().ordinal() > QueryState.STARTING.ordinal();
         QueryResultRows resultRows;
         if (isStarted) {
             closeExchangeIfNecessary(queryInfo);
@@ -425,17 +426,17 @@ class Query
             resultRows = queryResultRowsBuilder(session).build();
         }
 
-        if ((queryInfo.getUpdateType() != null) && (updateCount == null)) {
+        if ((queryInfo.updateType() != null) && (updateCount == null)) {
             // grab the update count for non-queries
             Optional<Long> updatedRowsCount = resultRows.getUpdateCount();
             updateCount = updatedRowsCount.orElse(null);
         }
 
-        if (isStarted && (queryInfo.getOutputStage().isEmpty() || exchangeDataSource.isFinished())) {
+        if (isStarted && (queryInfo.outputStage().isEmpty() || exchangeDataSource.isFinished())) {
             queryManager.resultsConsumed(queryId);
             resultsConsumed = true;
             // update query since the query might have been transitioned to the FINISHED state
-            queryInfo = queryManager.getFullQueryInfo(queryId);
+            queryInfo = queryManager.getResultQueryInfo(queryId);
         }
 
         // advance next token
@@ -445,7 +446,7 @@ class Query
         // (2) there is more data to send (due to buffering)
         //   OR
         // (3) cached query result needs client acknowledgement to discard
-        if (queryInfo.getState() != FAILED && (!queryInfo.isFinalQueryInfo() || !exchangeDataSource.isFinished() || (queryInfo.getOutputStage().isPresent() && !resultRows.isEmpty()))) {
+        if (queryInfo.state() != FAILED && (!queryInfo.finalQueryInfo() || !exchangeDataSource.isFinished() || (queryInfo.outputStage().isPresent() && !resultRows.isEmpty()))) {
             nextToken = OptionalLong.of(token + 1);
         }
         else {
@@ -458,48 +459,48 @@ class Query
         URI partialCancelUri = null;
         if (nextToken.isPresent()) {
             long nextToken = this.nextToken.getAsLong();
-            nextResultsUri = createNextResultsUri(uriInfo, nextToken);
+            nextResultsUri = createNextResultsUri(externalUriInfo, nextToken);
             partialCancelUri = findCancelableLeafStage(queryInfo)
-                    .map(stage -> createPartialCancelUri(stage, uriInfo, nextToken))
+                    .map(stage -> createPartialCancelUri(stage, externalUriInfo, nextToken))
                     .orElse(null);
         }
 
         // update catalog, schema, and path
-        setCatalog = queryInfo.getSetCatalog();
-        setSchema = queryInfo.getSetSchema();
-        setPath = queryInfo.getSetPath();
+        setCatalog = queryInfo.setCatalog();
+        setSchema = queryInfo.setSchema();
+        setPath = queryInfo.setPath();
 
         // update setAuthorizationUser
-        setAuthorizationUser = queryInfo.getSetAuthorizationUser();
-        resetAuthorizationUser = queryInfo.isResetAuthorizationUser();
+        setAuthorizationUser = queryInfo.setAuthorizationUser();
+        resetAuthorizationUser = queryInfo.resetAuthorizationUser();
 
         // update setSessionProperties
-        setSessionProperties = queryInfo.getSetSessionProperties();
-        resetSessionProperties = queryInfo.getResetSessionProperties();
+        setSessionProperties = queryInfo.setSessionProperties();
+        resetSessionProperties = queryInfo.resetSessionProperties();
 
         // update setRoles
-        setRoles = queryInfo.getSetRoles();
+        setRoles = queryInfo.setRoles();
 
         // update preparedStatements
-        addedPreparedStatements = queryInfo.getAddedPreparedStatements();
-        deallocatedPreparedStatements = queryInfo.getDeallocatedPreparedStatements();
+        addedPreparedStatements = queryInfo.addedPreparedStatements();
+        deallocatedPreparedStatements = queryInfo.deallocatedPreparedStatements();
 
         // update startedTransactionId
-        startedTransactionId = queryInfo.getStartedTransactionId();
-        clearTransactionId = queryInfo.isClearTransactionId();
+        startedTransactionId = queryInfo.startedTransactionId();
+        clearTransactionId = queryInfo.clearTransactionId();
 
         // first time through, self is null
         QueryResults queryResults = new QueryResults(
                 queryId.toString(),
-                getQueryInfoUri(queryInfoUrl, queryId, uriInfo),
+                getQueryInfoUri(queryInfoUrl, queryId, externalUriInfo),
                 partialCancelUri,
                 nextResultsUri,
                 resultRows.getColumns().orElse(null),
                 resultRows.isEmpty() ? null : resultRows, // client excepts null that indicates "no data"
                 toStatementStats(queryInfo),
                 toQueryError(queryInfo, typeSerializationException),
-                mappedCopy(queryInfo.getWarnings(), ProtocolUtil::toClientWarning),
-                queryInfo.getUpdateType(),
+                mappedCopy(queryInfo.warnings(), ProtocolUtil::toClientWarning),
+                queryInfo.updateType(),
                 updateCount);
 
         // cache the new result
@@ -528,9 +529,9 @@ class Query
                 queryResults);
     }
 
-    private synchronized QueryResultRows removePagesFromExchange(QueryInfo queryInfo, long targetResultBytes)
+    private synchronized QueryResultRows removePagesFromExchange(ResultQueryInfo queryInfo, long targetResultBytes)
     {
-        if (!resultsConsumed && queryInfo.getOutputStage().isEmpty()) {
+        if (!resultsConsumed && queryInfo.outputStage().isEmpty()) {
             return queryResultRowsBuilder(session)
                     .withColumnsAndTypes(ImmutableList.of(), ImmutableList.of())
                     .build();
@@ -570,16 +571,16 @@ class Query
         return resultBuilder.build();
     }
 
-    private void closeExchangeIfNecessary(QueryInfo queryInfo)
+    private void closeExchangeIfNecessary(ResultQueryInfo queryInfo)
     {
-        if (queryInfo.getState() != FAILED && queryInfo.getOutputStage().isPresent()) {
+        if (queryInfo.state() != FAILED && queryInfo.outputStage().isPresent()) {
             return;
         }
         // Close the exchange client if the query has failed, or if the query
         // does not have an output stage. The latter happens
         // for data definition executions, as those do not have output.
         synchronized (this) {
-            if (queryInfo.getState() == FAILED || (!exchangeDataSource.isFinished() && queryInfo.getOutputStage().isEmpty())) {
+            if (queryInfo.state() == FAILED || (!exchangeDataSource.isFinished() && queryInfo.outputStage().isEmpty())) {
                 exchangeDataSource.close();
             }
         }
@@ -630,36 +631,34 @@ class Query
         return Futures.transformAsync(queryManager.getStateChange(queryId, currentState), this::queryDoneFuture, directExecutor());
     }
 
-    private synchronized URI createNextResultsUri(UriInfo uriInfo, long nextToken)
+    private URI createNextResultsUri(ExternalUriInfo externalUriInfo, long nextToken)
     {
-        return uriInfo.getBaseUriBuilder()
-                .replacePath("/v1/statement/executing")
+        return externalUriInfo.baseUriBuilder()
+                .path("/v1/statement/executing")
                 .path(queryId.toString())
                 .path(slug.makeSlug(EXECUTING_QUERY, nextToken))
                 .path(String.valueOf(nextToken))
-                .replaceQuery("")
                 .build();
     }
 
-    private URI createPartialCancelUri(int stage, UriInfo uriInfo, long nextToken)
+    private URI createPartialCancelUri(int stage, ExternalUriInfo externalUriInfo, long nextToken)
     {
-        return uriInfo.getBaseUriBuilder()
-                .replacePath("/v1/statement/executing/partialCancel")
+        return externalUriInfo.baseUriBuilder()
+                .path("/v1/statement/executing/partialCancel")
                 .path(queryId.toString())
                 .path(String.valueOf(stage))
                 .path(slug.makeSlug(EXECUTING_QUERY, nextToken))
                 .path(String.valueOf(nextToken))
-                .replaceQuery("")
                 .build();
     }
 
-    private static Optional<Integer> findCancelableLeafStage(QueryInfo queryInfo)
+    private static Optional<Integer> findCancelableLeafStage(ResultQueryInfo queryInfo)
     {
         // if query is running, find the leaf-most running stage
-        return queryInfo.getOutputStage().flatMap(Query::findCancelableLeafStage);
+        return queryInfo.outputStage().flatMap(Query::findCancelableLeafStage);
     }
 
-    private static Optional<Integer> findCancelableLeafStage(StageInfo stage)
+    private static Optional<Integer> findCancelableLeafStage(BasicStageInfo stage)
     {
         // if this stage is already done, we can't cancel it
         if (stage.getState().isDone()) {
@@ -668,7 +667,7 @@ class Query
 
         // attempt to find a cancelable sub stage
         // check in reverse order since build side of a join will be later in the list
-        for (StageInfo subStage : stage.getSubStages().reversed()) {
+        for (BasicStageInfo subStage : stage.getSubStages().reversed()) {
             Optional<Integer> leafStage = findCancelableLeafStage(subStage);
             if (leafStage.isPresent()) {
                 return leafStage;
@@ -679,9 +678,9 @@ class Query
         return Optional.of(stage.getStageId().getId());
     }
 
-    private static QueryError toQueryError(QueryInfo queryInfo, Optional<Throwable> exception)
+    private static QueryError toQueryError(ResultQueryInfo queryInfo, Optional<Throwable> exception)
     {
-        if (queryInfo.getFailureInfo() == null && exception.isPresent()) {
+        if (queryInfo.failureInfo() == null && exception.isPresent()) {
             ErrorCode errorCode = SERIALIZATION_ERROR.toErrorCode();
             FailureInfo failure = toFailure(exception.get()).toFailureInfo();
             return new QueryError(

@@ -108,7 +108,7 @@ public class TableChangesFunction
         deltaLakeMetadata.beginQuery(session);
         try (UncheckedCloseable ignore = () -> deltaLakeMetadata.cleanupQuery(session)) {
             SchemaTableName schemaTableName = new SchemaTableName(schemaName, tableName);
-            ConnectorTableHandle connectorTableHandle = deltaLakeMetadata.getTableHandle(session, schemaTableName);
+            ConnectorTableHandle connectorTableHandle = deltaLakeMetadata.getTableHandle(session, schemaTableName, Optional.empty(), Optional.empty());
             if (connectorTableHandle == null) {
                 throw new TableNotFoundException(schemaTableName);
             }
@@ -123,16 +123,16 @@ public class TableChangesFunction
             List<DeltaLakeColumnHandle> columnHandles = deltaLakeMetadata.getColumnHandles(session, tableHandle)
                     .values().stream()
                     .map(DeltaLakeColumnHandle.class::cast)
-                    .filter(column -> column.getColumnType() != SYNTHESIZED)
+                    .filter(column -> column.columnType() != SYNTHESIZED)
                     .collect(toImmutableList());
             accessControl.checkCanSelectFromColumns(null, schemaTableName, columnHandles.stream()
                     // Lowercase column names because users don't know the original names
-                    .map(column -> column.getColumnName().toLowerCase(ENGLISH))
+                    .map(column -> column.columnName().toLowerCase(ENGLISH))
                     .collect(toImmutableSet()));
 
             ImmutableList.Builder<Descriptor.Field> outputFields = ImmutableList.builder();
             columnHandles.stream()
-                    .map(columnHandle -> new Descriptor.Field(columnHandle.getColumnName(), Optional.of(columnHandle.getType())))
+                    .map(columnHandle -> new Descriptor.Field(columnHandle.columnName(), Optional.of(columnHandle.type())))
                     .forEach(outputFields::add);
 
             // add at the end to follow Delta Lake convention

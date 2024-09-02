@@ -15,18 +15,18 @@ package io.trino.sql.planner.iterative.rule;
 
 import io.trino.matching.Captures;
 import io.trino.matching.Pattern;
+import io.trino.sql.ir.Expression;
 import io.trino.sql.planner.Symbol;
 import io.trino.sql.planner.iterative.Rule;
 import io.trino.sql.planner.optimizations.Cardinality;
 import io.trino.sql.planner.plan.ApplyNode;
 import io.trino.sql.planner.plan.Assignments;
 import io.trino.sql.planner.plan.ProjectNode;
-import io.trino.sql.tree.Expression;
 
+import static io.trino.sql.ir.Booleans.FALSE;
+import static io.trino.sql.ir.Booleans.TRUE;
 import static io.trino.sql.planner.optimizations.QueryCardinalityUtil.extractCardinality;
 import static io.trino.sql.planner.plan.Patterns.applyNode;
-import static io.trino.sql.tree.BooleanLiteral.FALSE_LITERAL;
-import static io.trino.sql.tree.BooleanLiteral.TRUE_LITERAL;
 
 /**
  * Given:
@@ -80,10 +80,10 @@ public class RemoveRedundantExists
         Cardinality subqueryCardinality = extractCardinality(node.getSubquery(), context.getLookup());
         Expression result;
         if (subqueryCardinality.isEmpty()) {
-            result = FALSE_LITERAL;
+            result = FALSE;
         }
         else if (subqueryCardinality.isAtLeastScalar()) {
-            result = TRUE_LITERAL;
+            result = TRUE;
         }
         else {
             return Result.empty();

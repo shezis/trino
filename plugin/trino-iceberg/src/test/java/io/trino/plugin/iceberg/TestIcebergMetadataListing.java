@@ -15,8 +15,8 @@ package io.trino.plugin.iceberg;
 
 import com.google.common.collect.ImmutableMap;
 import io.trino.Session;
+import io.trino.metastore.HiveMetastore;
 import io.trino.plugin.hive.TestingHivePlugin;
-import io.trino.plugin.hive.metastore.HiveMetastore;
 import io.trino.plugin.hive.metastore.HiveMetastoreFactory;
 import io.trino.spi.security.Identity;
 import io.trino.spi.security.SelectedRole;
@@ -97,6 +97,7 @@ public class TestIcebergMetadataListing
     public void testTableListing()
     {
         assertThat(metastore.getTables("test_schema"))
+                .extracting(table -> table.tableName().getTableName())
                 .containsExactlyInAnyOrder(
                         "iceberg_table1",
                         "iceberg_table2",

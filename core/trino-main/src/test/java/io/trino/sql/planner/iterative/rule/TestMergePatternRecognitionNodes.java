@@ -17,6 +17,12 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import io.trino.metadata.ResolvedFunction;
+import io.trino.metadata.TestingFunctionResolution;
+import io.trino.spi.function.OperatorType;
+import io.trino.sql.ir.Call;
+import io.trino.sql.ir.Comparison;
+import io.trino.sql.ir.Constant;
+import io.trino.sql.ir.Reference;
 import io.trino.sql.planner.OrderingScheme;
 import io.trino.sql.planner.Symbol;
 import io.trino.sql.planner.assertions.ExpressionMatcher;
@@ -24,7 +30,6 @@ import io.trino.sql.planner.assertions.PlanMatchPattern;
 import io.trino.sql.planner.iterative.rule.MergePatternRecognitionNodes.MergePatternRecognitionNodesWithProject;
 import io.trino.sql.planner.iterative.rule.MergePatternRecognitionNodes.MergePatternRecognitionNodesWithoutProject;
 import io.trino.sql.planner.iterative.rule.test.BaseRuleTest;
-import io.trino.sql.planner.iterative.rule.test.PlanBuilder;
 import io.trino.sql.planner.plan.Assignments;
 import io.trino.sql.planner.plan.WindowNode;
 import io.trino.sql.planner.rowpattern.AggregatedSetDescriptor;
@@ -33,9 +38,6 @@ import io.trino.sql.planner.rowpattern.LogicalIndexPointer;
 import io.trino.sql.planner.rowpattern.MatchNumberValuePointer;
 import io.trino.sql.planner.rowpattern.ScalarValuePointer;
 import io.trino.sql.planner.rowpattern.ir.IrLabel;
-import io.trino.sql.tree.ComparisonExpression;
-import io.trino.sql.tree.FunctionCall;
-import io.trino.sql.tree.QualifiedName;
 import org.junit.jupiter.api.Test;
 
 import java.util.Optional;
@@ -43,14 +45,17 @@ import java.util.Optional;
 import static io.trino.metadata.MetadataManager.createTestMetadataManager;
 import static io.trino.spi.connector.SortOrder.ASC_NULLS_LAST;
 import static io.trino.spi.type.BigintType.BIGINT;
+import static io.trino.spi.type.IntegerType.INTEGER;
 import static io.trino.sql.analyzer.TypeSignatureProvider.fromTypes;
-import static io.trino.sql.planner.assertions.PlanMatchPattern.functionCall;
+import static io.trino.sql.ir.Booleans.FALSE;
+import static io.trino.sql.ir.Booleans.TRUE;
+import static io.trino.sql.ir.Comparison.Operator.GREATER_THAN;
+import static io.trino.sql.planner.assertions.PlanMatchPattern.expression;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.patternRecognition;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.project;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.specification;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.values;
-import static io.trino.sql.planner.assertions.PlanMatchPattern.windowFrame;
-import static io.trino.sql.planner.iterative.rule.test.PlanBuilder.expression;
+import static io.trino.sql.planner.assertions.PlanMatchPattern.windowFunction;
 import static io.trino.sql.planner.plan.FrameBoundType.CURRENT_ROW;
 import static io.trino.sql.planner.plan.FrameBoundType.UNBOUNDED_FOLLOWING;
 import static io.trino.sql.planner.plan.RowsPerMatch.ALL_SHOW_EMPTY;
@@ -59,50 +64,63 @@ import static io.trino.sql.planner.plan.RowsPerMatch.WINDOW;
 import static io.trino.sql.planner.plan.SkipToPosition.LAST;
 import static io.trino.sql.planner.plan.WindowFrameType.ROWS;
 import static io.trino.sql.planner.plan.WindowNode.Frame.DEFAULT_FRAME;
-import static io.trino.sql.tree.ComparisonExpression.Operator.GREATER_THAN;
+import static io.trino.type.UnknownType.UNKNOWN;
 
 public class TestMergePatternRecognitionNodes
         extends BaseRuleTest
 {
+    private static final TestingFunctionResolution FUNCTIONS = new TestingFunctionResolution();
+    private static final ResolvedFunction ADD_BIGINT = FUNCTIONS.resolveOperator(OperatorType.ADD, ImmutableList.of(BIGINT, BIGINT));
+    private static final ResolvedFunction MULTIPLY_BIGINT = FUNCTIONS.resolveOperator(OperatorType.MULTIPLY, ImmutableList.of(BIGINT, BIGINT));
+
+    private static final WindowNode.Frame ROWS_CURRENT_TO_UNBOUNDED = new WindowNode.Frame(
+            ROWS,
+            CURRENT_ROW,
+            Optional.empty(),
+            Optional.empty(),
+            UNBOUNDED_FOLLOWING,
+            Optional.empty(),
+            Optional.empty());
+
     @Test
     public void testSpecificationsDoNotMatch()
     {
         tester().assertThat(new MergePatternRecognitionNodesWithoutProject())
                 .on(p -> p.patternRecognition(parentBuilder -> parentBuilder
                         .pattern(new IrLabel("X"))
-                        .addVariableDefinition(new IrLabel("X"), PlanBuilder.expression("true"))
+                        .addVariableDefinition(new IrLabel("X"), TRUE)
                         .source(p.patternRecognition(childBuilder -> childBuilder
                                 .pattern(new IrLabel("X"))
-                                .addVariableDefinition(new IrLabel("X"), PlanBuilder.expression("false"))
+                                .addVariableDefinition(new IrLabel("X"), FALSE)
                                 .source(p.values(p.symbol("a")))))))
                 .doesNotFire();
 
         tester().assertThat(new MergePatternRecognitionNodesWithProject())
                 .on(p -> p.patternRecognition(parentBuilder -> parentBuilder
                         .pattern(new IrLabel("X"))
-                        .addVariableDefinition(new IrLabel("X"), PlanBuilder.expression("true"))
+                        .addVariableDefinition(new IrLabel("X"), TRUE)
                         .source(p.project(
                                 Assignments.identity(p.symbol("a")),
                                 p.patternRecognition(childBuilder -> childBuilder
                                         .pattern(new IrLabel("X"))
-                                        .addVariableDefinition(new IrLabel("X"), PlanBuilder.expression("false"))
+                                        .addVariableDefinition(new IrLabel("X"), FALSE)
                                         .source(p.values(p.symbol("a"))))))))
                 .doesNotFire();
 
         // aggregations in variable definitions do not match
-        QualifiedName count = tester().getMetadata().resolveBuiltinFunction("count", fromTypes(BIGINT)).toQualifiedName();
+        ResolvedFunction count = tester().getMetadata().resolveBuiltinFunction("count", fromTypes(BIGINT));
         tester().assertThat(new MergePatternRecognitionNodesWithoutProject())
                 .on(p -> p.patternRecognition(parentBuilder -> parentBuilder
                         .pattern(new IrLabel("X"))
                         .addVariableDefinition(
                                 new IrLabel("X"),
-                                new ComparisonExpression(GREATER_THAN, new FunctionCall(count, ImmutableList.of(expression("a"))), expression("5")))
+                                new Comparison(GREATER_THAN, new Call(count, ImmutableList.of(new Reference(BIGINT, "a"))), new Constant(BIGINT, 5L)))
                         .source(p.patternRecognition(childBuilder -> childBuilder
                                 .pattern(new IrLabel("X"))
                                 .addVariableDefinition(
                                         new IrLabel("X"),
-                                        new ComparisonExpression(GREATER_THAN, new FunctionCall(count, ImmutableList.of(expression("b"))), expression("5")))
-                                .source(p.values(p.symbol("a"), p.symbol("b")))))))
+                                        new Comparison(GREATER_THAN, new Call(count, ImmutableList.of(new Reference(BIGINT, "b"))), new Constant(BIGINT, 5L)))
+                                .source(p.values(p.symbol("a"), p.symbol("b", INTEGER)))))))
                 .doesNotFire();
     }
 
@@ -116,23 +134,21 @@ public class TestMergePatternRecognitionNodes
                 .on(p -> p.patternRecognition(parentBuilder -> parentBuilder
                         .addMeasure(
                                 p.symbol("dependent"),
-                                PlanBuilder.expression("pointer"),
+                                new Reference(BIGINT, "pointer"),
                                 ImmutableMap.of("pointer", new ScalarValuePointer(
                                         new LogicalIndexPointer(ImmutableSet.of(new IrLabel("X")), true, true, 0, 0),
-                                        new Symbol("measure"))),
-                                BIGINT)
+                                        new Symbol(BIGINT, "measure"))))
                         .rowsPerMatch(ALL_SHOW_EMPTY)
                         .pattern(new IrLabel("X"))
-                        .addVariableDefinition(new IrLabel("X"), PlanBuilder.expression("true"))
+                        .addVariableDefinition(new IrLabel("X"), TRUE)
                         .source(p.patternRecognition(childBuilder -> childBuilder
                                 .addMeasure(
                                         p.symbol("measure"),
-                                        PlanBuilder.expression("pointer"),
-                                        ImmutableMap.of("pointer", new MatchNumberValuePointer()),
-                                        BIGINT)
+                                        new Reference(BIGINT, "pointer"),
+                                        ImmutableMap.of("pointer", new MatchNumberValuePointer()))
                                 .rowsPerMatch(ALL_SHOW_EMPTY)
                                 .pattern(new IrLabel("X"))
-                                .addVariableDefinition(new IrLabel("X"), PlanBuilder.expression("true"))
+                                .addVariableDefinition(new IrLabel("X"), TRUE)
                                 .source(p.values(p.symbol("a")))))))
                 .doesNotFire();
 
@@ -141,21 +157,20 @@ public class TestMergePatternRecognitionNodes
                 .on(p -> p.patternRecognition(parentBuilder -> parentBuilder
                         .addMeasure(
                                 p.symbol("dependent"),
-                                PlanBuilder.expression("pointer"),
+                                new Reference(BIGINT, "pointer"),
                                 ImmutableMap.of("pointer", new ScalarValuePointer(
                                         new LogicalIndexPointer(ImmutableSet.of(new IrLabel("X")), true, true, 0, 0),
-                                        new Symbol("function"))),
-                                BIGINT)
+                                        new Symbol(BIGINT, "function"))))
                         .rowsPerMatch(WINDOW)
-                        .frame(new WindowNode.Frame(ROWS, CURRENT_ROW, Optional.empty(), Optional.empty(), UNBOUNDED_FOLLOWING, Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty()))
+                        .frame(new WindowNode.Frame(ROWS, CURRENT_ROW, Optional.empty(), Optional.empty(), UNBOUNDED_FOLLOWING, Optional.empty(), Optional.empty()))
                         .pattern(new IrLabel("X"))
-                        .addVariableDefinition(new IrLabel("X"), PlanBuilder.expression("true"))
+                        .addVariableDefinition(new IrLabel("X"), TRUE)
                         .source(p.patternRecognition(childBuilder -> childBuilder
                                 .addWindowFunction(p.symbol("function"), new WindowNode.Function(lag, ImmutableList.of(p.symbol("a").toSymbolReference()), DEFAULT_FRAME, false))
                                 .rowsPerMatch(WINDOW)
-                                .frame(new WindowNode.Frame(ROWS, CURRENT_ROW, Optional.empty(), Optional.empty(), UNBOUNDED_FOLLOWING, Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty()))
+                                .frame(new WindowNode.Frame(ROWS, CURRENT_ROW, Optional.empty(), Optional.empty(), UNBOUNDED_FOLLOWING, Optional.empty(), Optional.empty()))
                                 .pattern(new IrLabel("X"))
-                                .addVariableDefinition(new IrLabel("X"), PlanBuilder.expression("true"))
+                                .addVariableDefinition(new IrLabel("X"), TRUE)
                                 .source(p.values(p.symbol("a")))))))
                 .doesNotFire();
 
@@ -164,15 +179,15 @@ public class TestMergePatternRecognitionNodes
                 .on(p -> p.patternRecognition(parentBuilder -> parentBuilder
                         .addWindowFunction(p.symbol("dependent"), new WindowNode.Function(lag, ImmutableList.of(p.symbol("function").toSymbolReference()), DEFAULT_FRAME, false))
                         .rowsPerMatch(WINDOW)
-                        .frame(new WindowNode.Frame(ROWS, CURRENT_ROW, Optional.empty(), Optional.empty(), UNBOUNDED_FOLLOWING, Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty()))
+                        .frame(new WindowNode.Frame(ROWS, CURRENT_ROW, Optional.empty(), Optional.empty(), UNBOUNDED_FOLLOWING, Optional.empty(), Optional.empty()))
                         .pattern(new IrLabel("X"))
-                        .addVariableDefinition(new IrLabel("X"), PlanBuilder.expression("true"))
+                        .addVariableDefinition(new IrLabel("X"), TRUE)
                         .source(p.patternRecognition(childBuilder -> childBuilder
                                 .addWindowFunction(p.symbol("function"), new WindowNode.Function(lag, ImmutableList.of(p.symbol("a").toSymbolReference()), DEFAULT_FRAME, false))
                                 .rowsPerMatch(WINDOW)
-                                .frame(new WindowNode.Frame(ROWS, CURRENT_ROW, Optional.empty(), Optional.empty(), UNBOUNDED_FOLLOWING, Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty()))
+                                .frame(new WindowNode.Frame(ROWS, CURRENT_ROW, Optional.empty(), Optional.empty(), UNBOUNDED_FOLLOWING, Optional.empty(), Optional.empty()))
                                 .pattern(new IrLabel("X"))
-                                .addVariableDefinition(new IrLabel("X"), PlanBuilder.expression("true"))
+                                .addVariableDefinition(new IrLabel("X"), TRUE)
                                 .source(p.values(p.symbol("a")))))))
                 .doesNotFire();
 
@@ -181,19 +196,18 @@ public class TestMergePatternRecognitionNodes
                 .on(p -> p.patternRecognition(parentBuilder -> parentBuilder
                         .addWindowFunction(p.symbol("dependent"), new WindowNode.Function(lag, ImmutableList.of(p.symbol("measure").toSymbolReference()), DEFAULT_FRAME, false))
                         .rowsPerMatch(WINDOW)
-                        .frame(new WindowNode.Frame(ROWS, CURRENT_ROW, Optional.empty(), Optional.empty(), UNBOUNDED_FOLLOWING, Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty()))
+                        .frame(new WindowNode.Frame(ROWS, CURRENT_ROW, Optional.empty(), Optional.empty(), UNBOUNDED_FOLLOWING, Optional.empty(), Optional.empty()))
                         .pattern(new IrLabel("X"))
-                        .addVariableDefinition(new IrLabel("X"), PlanBuilder.expression("true"))
+                        .addVariableDefinition(new IrLabel("X"), TRUE)
                         .source(p.patternRecognition(childBuilder -> childBuilder
                                 .addMeasure(
                                         p.symbol("measure"),
-                                        PlanBuilder.expression("pointer"),
-                                        ImmutableMap.of("pointer", new MatchNumberValuePointer()),
-                                        BIGINT)
+                                        new Reference(BIGINT, "pointer"),
+                                        ImmutableMap.of("pointer", new MatchNumberValuePointer()))
                                 .rowsPerMatch(WINDOW)
-                                .frame(new WindowNode.Frame(ROWS, CURRENT_ROW, Optional.empty(), Optional.empty(), UNBOUNDED_FOLLOWING, Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty()))
+                                .frame(new WindowNode.Frame(ROWS, CURRENT_ROW, Optional.empty(), Optional.empty(), UNBOUNDED_FOLLOWING, Optional.empty(), Optional.empty()))
                                 .pattern(new IrLabel("X"))
-                                .addVariableDefinition(new IrLabel("X"), PlanBuilder.expression("true"))
+                                .addVariableDefinition(new IrLabel("X"), TRUE)
                                 .source(p.values(p.symbol("a")))))))
                 .doesNotFire();
     }
@@ -206,25 +220,23 @@ public class TestMergePatternRecognitionNodes
                 .on(p -> p.patternRecognition(parentBuilder -> parentBuilder
                         .addMeasure(
                                 p.symbol("dependent"),
-                                PlanBuilder.expression("pointer"),
+                                new Reference(BIGINT, "pointer"),
                                 ImmutableMap.of("pointer", new ScalarValuePointer(
                                         new LogicalIndexPointer(ImmutableSet.of(new IrLabel("X")), true, true, 0, 0),
-                                        new Symbol("measure"))),
-                                BIGINT)
+                                        new Symbol(BIGINT, "measure"))))
                         .rowsPerMatch(ALL_SHOW_EMPTY)
                         .pattern(new IrLabel("X"))
-                        .addVariableDefinition(new IrLabel("X"), PlanBuilder.expression("true"))
+                        .addVariableDefinition(new IrLabel("X"), TRUE)
                         .source(p.project(
                                 Assignments.identity(p.symbol("measure")),
                                 p.patternRecognition(childBuilder -> childBuilder
                                         .addMeasure(
                                                 p.symbol("measure"),
-                                                PlanBuilder.expression("pointer"),
-                                                ImmutableMap.of("pointer", new MatchNumberValuePointer()),
-                                                BIGINT)
+                                                new Reference(BIGINT, "pointer"),
+                                                ImmutableMap.of("pointer", new MatchNumberValuePointer()))
                                         .rowsPerMatch(ALL_SHOW_EMPTY)
                                         .pattern(new IrLabel("X"))
-                                        .addVariableDefinition(new IrLabel("X"), PlanBuilder.expression("true"))
+                                        .addVariableDefinition(new IrLabel("X"), TRUE)
                                         .source(p.values(p.symbol("a"))))))))
                 .doesNotFire();
 
@@ -233,25 +245,23 @@ public class TestMergePatternRecognitionNodes
                 .on(p -> p.patternRecognition(parentBuilder -> parentBuilder
                         .addMeasure(
                                 p.symbol("dependent"),
-                                PlanBuilder.expression("pointer"),
+                                new Reference(BIGINT, "pointer"),
                                 ImmutableMap.of("pointer", new ScalarValuePointer(
                                         new LogicalIndexPointer(ImmutableSet.of(new IrLabel("X")), true, true, 0, 0),
-                                        new Symbol("renamed"))),
-                                BIGINT)
+                                        new Symbol(BIGINT, "renamed"))))
                         .rowsPerMatch(ALL_SHOW_EMPTY)
                         .pattern(new IrLabel("X"))
-                        .addVariableDefinition(new IrLabel("X"), PlanBuilder.expression("true"))
+                        .addVariableDefinition(new IrLabel("X"), TRUE)
                         .source(p.project(
-                                Assignments.of(p.symbol("renamed"), expression("measure")),
+                                Assignments.of(p.symbol("renamed"), new Reference(BIGINT, "measure")),
                                 p.patternRecognition(childBuilder -> childBuilder
                                         .addMeasure(
                                                 p.symbol("measure"),
-                                                PlanBuilder.expression("pointer"),
-                                                ImmutableMap.of("pointer", new MatchNumberValuePointer()),
-                                                BIGINT)
+                                                new Reference(BIGINT, "pointer"),
+                                                ImmutableMap.of("pointer", new MatchNumberValuePointer()))
                                         .rowsPerMatch(ALL_SHOW_EMPTY)
                                         .pattern(new IrLabel("X"))
-                                        .addVariableDefinition(new IrLabel("X"), PlanBuilder.expression("true"))
+                                        .addVariableDefinition(new IrLabel("X"), TRUE)
                                         .source(p.values(p.symbol("a"))))))))
                 .doesNotFire();
 
@@ -260,25 +270,23 @@ public class TestMergePatternRecognitionNodes
                 .on(p -> p.patternRecognition(parentBuilder -> parentBuilder
                         .addMeasure(
                                 p.symbol("dependent"),
-                                PlanBuilder.expression("pointer"),
+                                new Reference(BIGINT, "pointer"),
                                 ImmutableMap.of("pointer", new ScalarValuePointer(
                                         new LogicalIndexPointer(ImmutableSet.of(new IrLabel("X")), true, true, 0, 0),
-                                        new Symbol("projected"))),
-                                BIGINT)
+                                        new Symbol(BIGINT, "projected"))))
                         .rowsPerMatch(ALL_SHOW_EMPTY)
                         .pattern(new IrLabel("X"))
-                        .addVariableDefinition(new IrLabel("X"), PlanBuilder.expression("true"))
+                        .addVariableDefinition(new IrLabel("X"), TRUE)
                         .source(p.project(
-                                Assignments.of(p.symbol("projected"), expression("a * measure")),
+                                Assignments.of(p.symbol("projected"), new Call(MULTIPLY_BIGINT, ImmutableList.of(new Reference(BIGINT, "a"), new Reference(BIGINT, "measure")))),
                                 p.patternRecognition(childBuilder -> childBuilder
                                         .addMeasure(
                                                 p.symbol("measure"),
-                                                PlanBuilder.expression("pointer"),
-                                                ImmutableMap.of("pointer", new MatchNumberValuePointer()),
-                                                BIGINT)
+                                                new Reference(BIGINT, "pointer"),
+                                                ImmutableMap.of("pointer", new MatchNumberValuePointer()))
                                         .rowsPerMatch(ALL_SHOW_EMPTY)
                                         .pattern(new IrLabel("X"))
-                                        .addVariableDefinition(new IrLabel("X"), PlanBuilder.expression("true"))
+                                        .addVariableDefinition(new IrLabel("X"), TRUE)
                                         .source(p.values(p.symbol("a"))))))))
                 .doesNotFire();
     }
@@ -294,64 +302,64 @@ public class TestMergePatternRecognitionNodes
                         .orderBy(new OrderingScheme(ImmutableList.of(p.symbol("d")), ImmutableMap.of(p.symbol("d"), ASC_NULLS_LAST)))
                         .addMeasure(
                                 p.symbol("parent_measure"),
-                                PlanBuilder.expression("pointer"),
+                                new Reference(BIGINT, "pointer"),
                                 ImmutableMap.of("pointer", new ScalarValuePointer(
                                         new LogicalIndexPointer(ImmutableSet.of(new IrLabel("X")), true, true, 0, 0),
-                                        new Symbol("b"))),
-                                BIGINT)
+                                        new Symbol(BIGINT, "b"))))
                         .addWindowFunction(p.symbol("parent_function"), new WindowNode.Function(lag, ImmutableList.of(p.symbol("a").toSymbolReference()), DEFAULT_FRAME, false))
                         .rowsPerMatch(WINDOW)
-                        .frame(new WindowNode.Frame(ROWS, CURRENT_ROW, Optional.empty(), Optional.empty(), UNBOUNDED_FOLLOWING, Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty()))
+                        .frame(new WindowNode.Frame(ROWS, CURRENT_ROW, Optional.empty(), Optional.empty(), UNBOUNDED_FOLLOWING, Optional.empty(), Optional.empty()))
                         .skipTo(LAST, ImmutableSet.of(new IrLabel("X")))
                         .seek()
                         .addSubset(new IrLabel("U"), ImmutableSet.of(new IrLabel("X")))
                         .pattern(new IrLabel("X"))
-                        .addVariableDefinition(new IrLabel("X"), PlanBuilder.expression("true"))
-                        .source(p.patternRecognition(childBuilder -> childBuilder
-                                .partitionBy(ImmutableList.of(p.symbol("c")))
-                                .orderBy(new OrderingScheme(ImmutableList.of(p.symbol("d")), ImmutableMap.of(p.symbol("d"), ASC_NULLS_LAST)))
-                                .addMeasure(
-                                        p.symbol("child_measure"),
-                                        PlanBuilder.expression("pointer"),
-                                        ImmutableMap.of("pointer", new ScalarValuePointer(
-                                                new LogicalIndexPointer(ImmutableSet.of(new IrLabel("X")), false, true, 0, 0),
-                                                new Symbol("a"))),
-                                        BIGINT)
-                                .addWindowFunction(p.symbol("child_function"), new WindowNode.Function(lag, ImmutableList.of(p.symbol("b").toSymbolReference()), DEFAULT_FRAME, false))
-                                .rowsPerMatch(WINDOW)
-                                .frame(new WindowNode.Frame(ROWS, CURRENT_ROW, Optional.empty(), Optional.empty(), UNBOUNDED_FOLLOWING, Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty()))
-                                .skipTo(LAST, ImmutableSet.of(new IrLabel("X")))
-                                .seek()
-                                .addSubset(new IrLabel("U"), ImmutableSet.of(new IrLabel("X")))
-                                .pattern(new IrLabel("X"))
-                                .addVariableDefinition(new IrLabel("X"), PlanBuilder.expression("true"))
-                                .source(p.values(p.symbol("a"), p.symbol("b"), p.symbol("c"), p.symbol("d")))))))
+                        .addVariableDefinition(new IrLabel("X"), TRUE)
+                        .source(p.patternRecognition(childBuilder -> {
+                            childBuilder
+                                    .partitionBy(ImmutableList.of(p.symbol("c")))
+                                    .orderBy(new OrderingScheme(ImmutableList.of(p.symbol("d")), ImmutableMap.of(p.symbol("d"), ASC_NULLS_LAST)))
+                                    .addMeasure(
+                                            p.symbol("child_measure"),
+                                            new Reference(BIGINT, "pointer"),
+                                            ImmutableMap.of("pointer", new ScalarValuePointer(
+                                                    new LogicalIndexPointer(ImmutableSet.of(new IrLabel("X")), false, true, 0, 0),
+                                                    new Symbol(BIGINT, "a"))))
+                                    .addWindowFunction(p.symbol("child_function"), new WindowNode.Function(lag, ImmutableList.of(p.symbol("b").toSymbolReference()), DEFAULT_FRAME, false))
+                                    .rowsPerMatch(WINDOW)
+                                    .frame(new WindowNode.Frame(ROWS, CURRENT_ROW, Optional.empty(), Optional.empty(), UNBOUNDED_FOLLOWING, Optional.empty(), Optional.empty()))
+                                    .skipTo(LAST, ImmutableSet.of(new IrLabel("X")))
+                                    .seek()
+                                    .addSubset(new IrLabel("U"), ImmutableSet.of(new IrLabel("X")))
+                                    .pattern(new IrLabel("X"))
+                                    .addVariableDefinition(new IrLabel("X"), TRUE)
+                                    .source(p.values(p.symbol("a"), p.symbol("b"), p.symbol("c"), p.symbol("d")));
+                        }))))
                 .matches(
                         patternRecognition(builder -> builder
                                         .specification(specification(ImmutableList.of("c"), ImmutableList.of("d"), ImmutableMap.of("d", ASC_NULLS_LAST)))
                                         .addMeasure(
                                                 "parent_measure",
-                                                PlanBuilder.expression("pointer"),
+                                                new Reference(BIGINT, "pointer"),
                                                 ImmutableMap.of("pointer", new ScalarValuePointer(
                                                         new LogicalIndexPointer(ImmutableSet.of(new IrLabel("X")), true, true, 0, 0),
-                                                        new Symbol("b"))),
+                                                        new Symbol(BIGINT, "b"))),
                                                 BIGINT)
                                         .addMeasure(
                                                 "child_measure",
-                                                PlanBuilder.expression("pointer"),
+                                                new Reference(BIGINT, "pointer"),
                                                 ImmutableMap.of("pointer", new ScalarValuePointer(
                                                         new LogicalIndexPointer(ImmutableSet.of(new IrLabel("X")), false, true, 0, 0),
-                                                        new Symbol("a"))),
+                                                        new Symbol(BIGINT, "a"))),
                                                 BIGINT)
-                                        .addFunction("parent_function", functionCall("lag", ImmutableList.of("a")))
-                                        .addFunction("child_function", functionCall("lag", ImmutableList.of("b")))
+                                        .addFunction("parent_function", windowFunction("lag", ImmutableList.of("a"), DEFAULT_FRAME))
+                                        .addFunction("child_function", windowFunction("lag", ImmutableList.of("b"), DEFAULT_FRAME))
                                         .rowsPerMatch(WINDOW)
-                                        .frame(windowFrame(ROWS, CURRENT_ROW, Optional.empty(), UNBOUNDED_FOLLOWING, Optional.empty(), Optional.empty()))
+                                        .frame(ROWS_CURRENT_TO_UNBOUNDED)
                                         .skipTo(LAST, new IrLabel("X"))
                                         .seek()
                                         .addSubset(new IrLabel("U"), ImmutableSet.of(new IrLabel("X")))
                                         .pattern(new IrLabel("X"))
-                                        .addVariableDefinition(new IrLabel("X"), PlanBuilder.expression("true")),
+                                        .addVariableDefinition(new IrLabel("X"), TRUE),
                                 values("a", "b", "c", "d")));
     }
 
@@ -365,51 +373,51 @@ public class TestMergePatternRecognitionNodes
                         .partitionBy(ImmutableList.of(p.symbol("c")))
                         .addMeasure(
                                 p.symbol("parent_measure"),
-                                PlanBuilder.expression("pointer"),
+                                new Reference(BIGINT, "pointer"),
                                 ImmutableMap.of("pointer", new ScalarValuePointer(
                                         new LogicalIndexPointer(ImmutableSet.of(new IrLabel("X")), true, true, 0, 0),
-                                        new Symbol("b"))),
-                                BIGINT)
+                                        new Symbol(BIGINT, "b"))))
                         .rowsPerMatch(ONE)
                         .pattern(new IrLabel("X"))
-                        .addVariableDefinition(new IrLabel("X"), PlanBuilder.expression("true"))
-                        .source(p.patternRecognition(childBuilder -> childBuilder
-                                .partitionBy(ImmutableList.of(p.symbol("c")))
-                                .addMeasure(
-                                        p.symbol("child_measure"),
-                                        PlanBuilder.expression("pointer"),
-                                        ImmutableMap.of("pointer", new ScalarValuePointer(
-                                                new LogicalIndexPointer(ImmutableSet.of(new IrLabel("X")), false, true, 0, 0),
-                                                new Symbol("a"))),
-                                        BIGINT)
-                                .rowsPerMatch(ONE)
-                                .pattern(new IrLabel("X"))
-                                .addVariableDefinition(new IrLabel("X"), PlanBuilder.expression("true"))
-                                .source(p.values(p.symbol("a"), p.symbol("b"), p.symbol("c")))))))
+                        .addVariableDefinition(new IrLabel("X"), TRUE)
+                        .source(p.patternRecognition(childBuilder -> {
+                            childBuilder
+                                    .partitionBy(ImmutableList.of(p.symbol("c")))
+                                    .addMeasure(
+                                            p.symbol("child_measure"),
+                                            new Reference(BIGINT, "pointer"),
+                                            ImmutableMap.of("pointer", new ScalarValuePointer(
+                                                    new LogicalIndexPointer(ImmutableSet.of(new IrLabel("X")), false, true, 0, 0),
+                                                    new Symbol(BIGINT, "a"))))
+                                    .rowsPerMatch(ONE)
+                                    .pattern(new IrLabel("X"))
+                                    .addVariableDefinition(new IrLabel("X"), TRUE)
+                                    .source(p.values(p.symbol("a"), p.symbol("b"), p.symbol("c")));
+                        }))))
                 .matches(
                         project(
                                 ImmutableMap.of(
-                                        "c", PlanMatchPattern.expression("c"),
-                                        "parent_measure", PlanMatchPattern.expression("parent_measure")),
+                                        "c", expression(new Reference(BIGINT, "c")),
+                                        "parent_measure", expression(new Reference(BIGINT, "parent_measure"))),
                                 patternRecognition(builder -> builder
                                                 .specification(specification(ImmutableList.of("c"), ImmutableList.of(), ImmutableMap.of()))
                                                 .addMeasure(
                                                         "parent_measure",
-                                                        PlanBuilder.expression("pointer"),
+                                                        new Reference(BIGINT, "pointer"),
                                                         ImmutableMap.of("pointer", new ScalarValuePointer(
                                                                 new LogicalIndexPointer(ImmutableSet.of(new IrLabel("X")), true, true, 0, 0),
-                                                                new Symbol("b"))),
+                                                                new Symbol(BIGINT, "b"))),
                                                         BIGINT)
                                                 .addMeasure(
                                                         "child_measure",
-                                                        PlanBuilder.expression("pointer"),
+                                                        new Reference(BIGINT, "pointer"),
                                                         ImmutableMap.of("pointer", new ScalarValuePointer(
                                                                 new LogicalIndexPointer(ImmutableSet.of(new IrLabel("X")), false, true, 0, 0),
-                                                                new Symbol("a"))),
+                                                                new Symbol(BIGINT, "a"))),
                                                         BIGINT)
                                                 .rowsPerMatch(ONE)
                                                 .pattern(new IrLabel("X"))
-                                                .addVariableDefinition(new IrLabel("X"), PlanBuilder.expression("true")),
+                                                .addVariableDefinition(new IrLabel("X"), TRUE),
                                         values("a", "b", "c"))));
     }
 
@@ -422,61 +430,61 @@ public class TestMergePatternRecognitionNodes
                 .on(p -> p.patternRecognition(parentBuilder -> parentBuilder
                         .addMeasure(
                                 p.symbol("parent_measure"),
-                                PlanBuilder.expression("pointer"),
+                                new Reference(BIGINT, "pointer"),
                                 ImmutableMap.of("pointer", new ScalarValuePointer(
                                         new LogicalIndexPointer(ImmutableSet.of(new IrLabel("X")), true, true, 0, 0),
-                                        new Symbol("a"))),
-                                BIGINT)
+                                        new Symbol(BIGINT, "a"))))
                         .rowsPerMatch(ALL_SHOW_EMPTY)
                         .pattern(new IrLabel("X"))
-                        .addVariableDefinition(new IrLabel("X"), PlanBuilder.expression("true"))
+                        .addVariableDefinition(new IrLabel("X"), TRUE)
                         .source(p.project(
                                 Assignments.of(
-                                        p.symbol("a"), expression("a"),
-                                        p.symbol("expression"), expression("a * b")),
-                                p.patternRecognition(childBuilder -> childBuilder
-                                        .addMeasure(
-                                                p.symbol("child_measure"),
-                                                PlanBuilder.expression("pointer"),
-                                                ImmutableMap.of("pointer", new ScalarValuePointer(
-                                                        new LogicalIndexPointer(ImmutableSet.of(new IrLabel("X")), false, true, 0, 0),
-                                                        new Symbol("b"))),
-                                                BIGINT)
-                                        .rowsPerMatch(ALL_SHOW_EMPTY)
-                                        .pattern(new IrLabel("X"))
-                                        .addVariableDefinition(new IrLabel("X"), PlanBuilder.expression("true"))
-                                        .source(p.values(p.symbol("a"), p.symbol("b"))))))))
+                                        p.symbol("a"), new Reference(BIGINT, "a"),
+                                        p.symbol("expression"), new Call(MULTIPLY_BIGINT, ImmutableList.of(new Reference(BIGINT, "a"), new Reference(BIGINT, "b")))),
+                                p.patternRecognition(childBuilder -> {
+                                    childBuilder
+                                            .addMeasure(
+                                                    p.symbol("child_measure"),
+                                                    new Reference(BIGINT, "pointer"),
+                                                    ImmutableMap.of("pointer", new ScalarValuePointer(
+                                                            new LogicalIndexPointer(ImmutableSet.of(new IrLabel("X")), false, true, 0, 0),
+                                                            new Symbol(BIGINT, "b"))))
+                                            .rowsPerMatch(ALL_SHOW_EMPTY)
+                                            .pattern(new IrLabel("X"))
+                                            .addVariableDefinition(new IrLabel("X"), TRUE)
+                                            .source(p.values(p.symbol("a"), p.symbol("b")));
+                                })))))
                 .matches(
                         project(
                                 ImmutableMap.of(
-                                        "a", PlanMatchPattern.expression("a"),
-                                        "parent_measure", PlanMatchPattern.expression("parent_measure"),
-                                        "expression", PlanMatchPattern.expression("expression")),
+                                        "a", expression(new Reference(BIGINT, "a")),
+                                        "parent_measure", expression(new Reference(BIGINT, "parent_measure")),
+                                        "expression", expression(new Reference(BIGINT, "expression"))),
                                 project(
                                         ImmutableMap.of(
-                                                "a", PlanMatchPattern.expression("a"),
-                                                "b", PlanMatchPattern.expression("b"),
-                                                "parent_measure", PlanMatchPattern.expression("parent_measure"),
-                                                "child_measure", PlanMatchPattern.expression("child_measure"),
-                                                "expression", PlanMatchPattern.expression("a * b")),
+                                                "a", expression(new Reference(BIGINT, "a")),
+                                                "b", expression(new Reference(BIGINT, "b")),
+                                                "parent_measure", expression(new Reference(BIGINT, "parent_measure")),
+                                                "child_measure", expression(new Reference(BIGINT, "child_measure")),
+                                                "expression", expression(new Call(MULTIPLY_BIGINT, ImmutableList.of(new Reference(BIGINT, "a"), new Reference(BIGINT, "b"))))),
                                         patternRecognition(builder -> builder
                                                         .addMeasure(
                                                                 "parent_measure",
-                                                                PlanBuilder.expression("pointer"),
+                                                                new Reference(BIGINT, "pointer"),
                                                                 ImmutableMap.of("pointer", new ScalarValuePointer(
                                                                         new LogicalIndexPointer(ImmutableSet.of(new IrLabel("X")), true, true, 0, 0),
-                                                                        new Symbol("a"))),
+                                                                        new Symbol(BIGINT, "a"))),
                                                                 BIGINT)
                                                         .addMeasure(
                                                                 "child_measure",
-                                                                PlanBuilder.expression("pointer"),
+                                                                new Reference(BIGINT, "pointer"),
                                                                 ImmutableMap.of("pointer", new ScalarValuePointer(
                                                                         new LogicalIndexPointer(ImmutableSet.of(new IrLabel("X")), false, true, 0, 0),
-                                                                        new Symbol("b"))),
+                                                                        new Symbol(BIGINT, "b"))),
                                                                 BIGINT)
                                                         .rowsPerMatch(ALL_SHOW_EMPTY)
                                                         .pattern(new IrLabel("X"))
-                                                        .addVariableDefinition(new IrLabel("X"), PlanBuilder.expression("true")),
+                                                        .addVariableDefinition(new IrLabel("X"), TRUE),
                                                 values("a", "b")))));
 
         // project is based on symbols created by the child node
@@ -485,61 +493,61 @@ public class TestMergePatternRecognitionNodes
                 .on(p -> p.patternRecognition(parentBuilder -> parentBuilder
                         .addMeasure(
                                 p.symbol("parent_measure"),
-                                PlanBuilder.expression("pointer"),
+                                new Reference(BIGINT, "pointer"),
                                 ImmutableMap.of("pointer", new ScalarValuePointer(
                                         new LogicalIndexPointer(ImmutableSet.of(new IrLabel("X")), true, true, 0, 0),
-                                        new Symbol("a"))),
-                                BIGINT)
+                                        new Symbol(BIGINT, "a"))))
                         .rowsPerMatch(ALL_SHOW_EMPTY)
                         .pattern(new IrLabel("X"))
-                        .addVariableDefinition(new IrLabel("X"), PlanBuilder.expression("true"))
+                        .addVariableDefinition(new IrLabel("X"), TRUE)
                         .source(p.project(
                                 Assignments.of(
-                                        p.symbol("a"), expression("a"),
-                                        p.symbol("expression"), expression("a * b * child_measure")),
-                                p.patternRecognition(childBuilder -> childBuilder
-                                        .addMeasure(
-                                                p.symbol("child_measure"),
-                                                PlanBuilder.expression("pointer"),
-                                                ImmutableMap.of("pointer", new ScalarValuePointer(
-                                                        new LogicalIndexPointer(ImmutableSet.of(new IrLabel("X")), false, true, 0, 0),
-                                                        new Symbol("b"))),
-                                                BIGINT)
-                                        .rowsPerMatch(ALL_SHOW_EMPTY)
-                                        .pattern(new IrLabel("X"))
-                                        .addVariableDefinition(new IrLabel("X"), PlanBuilder.expression("true"))
-                                        .source(p.values(p.symbol("a"), p.symbol("b"))))))))
+                                        p.symbol("a"), new Reference(BIGINT, "a"),
+                                        p.symbol("expression"), new Call(MULTIPLY_BIGINT, ImmutableList.of(new Call(MULTIPLY_BIGINT, ImmutableList.of(new Reference(BIGINT, "a"), new Reference(BIGINT, "b"))), new Reference(BIGINT, "child_measure")))),
+                                p.patternRecognition(childBuilder -> {
+                                    childBuilder
+                                            .addMeasure(
+                                                    p.symbol("child_measure"),
+                                                    new Reference(BIGINT, "pointer"),
+                                                    ImmutableMap.of("pointer", new ScalarValuePointer(
+                                                            new LogicalIndexPointer(ImmutableSet.of(new IrLabel("X")), false, true, 0, 0),
+                                                            new Symbol(BIGINT, "b"))))
+                                            .rowsPerMatch(ALL_SHOW_EMPTY)
+                                            .pattern(new IrLabel("X"))
+                                            .addVariableDefinition(new IrLabel("X"), TRUE)
+                                            .source(p.values(p.symbol("a"), p.symbol("b")));
+                                })))))
                 .matches(
                         project(
                                 ImmutableMap.of(
-                                        "a", PlanMatchPattern.expression("a"),
-                                        "parent_measure", PlanMatchPattern.expression("parent_measure"),
-                                        "expression", PlanMatchPattern.expression("expression")),
+                                        "a", expression(new Reference(BIGINT, "a")),
+                                        "parent_measure", expression(new Reference(BIGINT, "parent_measure")),
+                                        "expression", expression(new Reference(BIGINT, "expression"))),
                                 project(
                                         ImmutableMap.of(
-                                                "a", PlanMatchPattern.expression("a"),
-                                                "b", PlanMatchPattern.expression("b"),
-                                                "parent_measure", PlanMatchPattern.expression("parent_measure"),
-                                                "child_measure", PlanMatchPattern.expression("child_measure"),
-                                                "expression", PlanMatchPattern.expression("a * b * child_measure")),
+                                                "a", expression(new Reference(BIGINT, "a")),
+                                                "b", expression(new Reference(BIGINT, "b")),
+                                                "parent_measure", expression(new Reference(BIGINT, "parent_measure")),
+                                                "child_measure", expression(new Reference(BIGINT, "child_measure")),
+                                                "expression", expression(new Call(MULTIPLY_BIGINT, ImmutableList.of(new Call(MULTIPLY_BIGINT, ImmutableList.of(new Reference(BIGINT, "a"), new Reference(BIGINT, "b"))), new Reference(BIGINT, "child_measure"))))),
                                         patternRecognition(builder -> builder
                                                         .addMeasure(
                                                                 "parent_measure",
-                                                                PlanBuilder.expression("pointer"),
+                                                                new Reference(BIGINT, "pointer"),
                                                                 ImmutableMap.of("pointer", new ScalarValuePointer(
                                                                         new LogicalIndexPointer(ImmutableSet.of(new IrLabel("X")), true, true, 0, 0),
-                                                                        new Symbol("a"))),
+                                                                        new Symbol(BIGINT, "a"))),
                                                                 BIGINT)
                                                         .addMeasure(
                                                                 "child_measure",
-                                                                PlanBuilder.expression("pointer"),
+                                                                new Reference(BIGINT, "pointer"),
                                                                 ImmutableMap.of("pointer", new ScalarValuePointer(
                                                                         new LogicalIndexPointer(ImmutableSet.of(new IrLabel("X")), false, true, 0, 0),
-                                                                        new Symbol("b"))),
+                                                                        new Symbol(BIGINT, "b"))),
                                                                 BIGINT)
                                                         .rowsPerMatch(ALL_SHOW_EMPTY)
                                                         .pattern(new IrLabel("X"))
-                                                        .addVariableDefinition(new IrLabel("X"), PlanBuilder.expression("true")),
+                                                        .addVariableDefinition(new IrLabel("X"), TRUE),
                                                 values("a", "b")))));
     }
 
@@ -553,71 +561,71 @@ public class TestMergePatternRecognitionNodes
                 .on(p -> p.patternRecognition(parentBuilder -> parentBuilder
                         .addMeasure(
                                 p.symbol("parent_measure"),
-                                PlanBuilder.expression("pointer"),
+                                new Reference(BIGINT, "pointer"),
                                 ImmutableMap.of("pointer", new ScalarValuePointer(
                                         new LogicalIndexPointer(ImmutableSet.of(new IrLabel("X")), true, true, 0, 0),
-                                        new Symbol("expression_1"))),
-                                BIGINT)
+                                        new Symbol(BIGINT, "expression_1"))))
                         .rowsPerMatch(ALL_SHOW_EMPTY)
                         .pattern(new IrLabel("X"))
-                        .addVariableDefinition(new IrLabel("X"), PlanBuilder.expression("true"))
+                        .addVariableDefinition(new IrLabel("X"), TRUE)
                         .source(p.project(
                                 Assignments.builder()
-                                        .put(p.symbol("a"), expression("a"))
-                                        .put(p.symbol("expression_1"), expression("a * b"))
-                                        .put(p.symbol("expression_2"), expression("a + b"))
+                                        .put(p.symbol("a"), new Reference(BIGINT, "a"))
+                                        .put(p.symbol("expression_1"), new Call(MULTIPLY_BIGINT, ImmutableList.of(new Reference(BIGINT, "a"), new Reference(BIGINT, "b"))))
+                                        .put(p.symbol("expression_2"), new Call(ADD_BIGINT, ImmutableList.of(new Reference(BIGINT, "a"), new Reference(BIGINT, "b"))))
                                         .build(),
-                                p.patternRecognition(childBuilder -> childBuilder
-                                        .addMeasure(
-                                                p.symbol("child_measure"),
-                                                PlanBuilder.expression("pointer"),
-                                                ImmutableMap.of("pointer", new ScalarValuePointer(
-                                                        new LogicalIndexPointer(ImmutableSet.of(new IrLabel("X")), false, true, 0, 0),
-                                                        new Symbol("b"))),
-                                                BIGINT)
-                                        .rowsPerMatch(ALL_SHOW_EMPTY)
-                                        .pattern(new IrLabel("X"))
-                                        .addVariableDefinition(new IrLabel("X"), PlanBuilder.expression("true"))
-                                        .source(p.values(p.symbol("a"), p.symbol("b"))))))))
+                                p.patternRecognition(childBuilder -> {
+                                    childBuilder
+                                            .addMeasure(
+                                                    p.symbol("child_measure"),
+                                                    new Reference(BIGINT, "pointer"),
+                                                    ImmutableMap.of("pointer", new ScalarValuePointer(
+                                                            new LogicalIndexPointer(ImmutableSet.of(new IrLabel("X")), false, true, 0, 0),
+                                                            new Symbol(BIGINT, "b"))))
+                                            .rowsPerMatch(ALL_SHOW_EMPTY)
+                                            .pattern(new IrLabel("X"))
+                                            .addVariableDefinition(new IrLabel("X"), TRUE)
+                                            .source(p.values(p.symbol("a"), p.symbol("b")));
+                                })))))
                 .matches(
                         project(
                                 ImmutableMap.of(
-                                        "a", PlanMatchPattern.expression("a"),
-                                        "parent_measure", PlanMatchPattern.expression("parent_measure"),
-                                        "expression_1", PlanMatchPattern.expression("expression_1"),
-                                        "expression_2", PlanMatchPattern.expression("expression_2")),
+                                        "a", expression(new Reference(BIGINT, "a")),
+                                        "parent_measure", expression(new Reference(BIGINT, "parent_measure")),
+                                        "expression_1", expression(new Reference(BIGINT, "expression_1")),
+                                        "expression_2", expression(new Reference(BIGINT, "expression_2"))),
                                 project(
                                         ImmutableMap.<String, ExpressionMatcher>builder()
-                                                .put("a", PlanMatchPattern.expression("a"))
-                                                .put("b", PlanMatchPattern.expression("b"))
-                                                .put("parent_measure", PlanMatchPattern.expression("parent_measure"))
-                                                .put("child_measure", PlanMatchPattern.expression("child_measure"))
-                                                .put("expression_1", PlanMatchPattern.expression("expression_1"))
-                                                .put("expression_2", PlanMatchPattern.expression("a + b"))
+                                                .put("a", expression(new Reference(BIGINT, "a")))
+                                                .put("b", expression(new Reference(BIGINT, "b")))
+                                                .put("parent_measure", expression(new Reference(BIGINT, "parent_measure")))
+                                                .put("child_measure", expression(new Reference(BIGINT, "child_measure")))
+                                                .put("expression_1", expression(new Reference(BIGINT, "expression_1")))
+                                                .put("expression_2", expression(new Call(ADD_BIGINT, ImmutableList.of(new Reference(BIGINT, "a"), new Reference(BIGINT, "b")))))
                                                 .buildOrThrow(),
                                         patternRecognition(builder -> builder
                                                         .addMeasure(
                                                                 "parent_measure",
-                                                                PlanBuilder.expression("pointer"),
+                                                                new Reference(BIGINT, "pointer"),
                                                                 ImmutableMap.of("pointer", new ScalarValuePointer(
                                                                         new LogicalIndexPointer(ImmutableSet.of(new IrLabel("X")), true, true, 0, 0),
-                                                                        new Symbol("expression_1"))),
+                                                                        new Symbol(BIGINT, "expression_1"))),
                                                                 BIGINT)
                                                         .addMeasure(
                                                                 "child_measure",
-                                                                PlanBuilder.expression("pointer"),
+                                                                new Reference(BIGINT, "pointer"),
                                                                 ImmutableMap.of("pointer", new ScalarValuePointer(
                                                                         new LogicalIndexPointer(ImmutableSet.of(new IrLabel("X")), false, true, 0, 0),
-                                                                        new Symbol("b"))),
+                                                                        new Symbol(BIGINT, "b"))),
                                                                 BIGINT)
                                                         .rowsPerMatch(ALL_SHOW_EMPTY)
                                                         .pattern(new IrLabel("X"))
-                                                        .addVariableDefinition(new IrLabel("X"), PlanBuilder.expression("true")),
+                                                        .addVariableDefinition(new IrLabel("X"), TRUE),
                                                 project(
                                                         ImmutableMap.of(
-                                                                "a", PlanMatchPattern.expression("a"),
-                                                                "b", PlanMatchPattern.expression("b"),
-                                                                "expression_1", PlanMatchPattern.expression("a * b")),
+                                                                "a", expression(new Reference(BIGINT, "a")),
+                                                                "b", expression(new Reference(BIGINT, "b")),
+                                                                "expression_1", expression(new Call(MULTIPLY_BIGINT, ImmutableList.of(new Reference(BIGINT, "a"), new Reference(BIGINT, "b"))))),
                                                         values("a", "b"))))));
     }
 
@@ -633,69 +641,69 @@ public class TestMergePatternRecognitionNodes
                         .partitionBy(ImmutableList.of(p.symbol("a")))
                         .addMeasure(
                                 p.symbol("parent_measure"),
-                                PlanBuilder.expression("pointer"),
+                                new Reference(BIGINT, "pointer"),
                                 ImmutableMap.of("pointer", new ScalarValuePointer(
                                         new LogicalIndexPointer(ImmutableSet.of(new IrLabel("X")), true, true, 0, 0),
-                                        new Symbol("expression_1"))),
-                                BIGINT)
+                                        new Symbol(BIGINT, "expression_1"))))
                         .rowsPerMatch(ONE)
                         .pattern(new IrLabel("X"))
-                        .addVariableDefinition(new IrLabel("X"), PlanBuilder.expression("true"))
+                        .addVariableDefinition(new IrLabel("X"), TRUE)
                         .source(p.project(
                                 Assignments.builder()
-                                        .put(p.symbol("a"), expression("a"))
-                                        .put(p.symbol("child_measure"), expression("child_measure"))
-                                        .put(p.symbol("expression_1"), expression("a * a"))
-                                        .put(p.symbol("expression_2"), expression("a + a"))
+                                        .put(p.symbol("a"), new Reference(BIGINT, "a"))
+                                        .put(p.symbol("child_measure"), new Reference(BIGINT, "child_measure"))
+                                        .put(p.symbol("expression_1"), new Call(MULTIPLY_BIGINT, ImmutableList.of(new Reference(BIGINT, "a"), new Reference(BIGINT, "a"))))
+                                        .put(p.symbol("expression_2"), new Call(ADD_BIGINT, ImmutableList.of(new Reference(BIGINT, "a"), new Reference(BIGINT, "a"))))
                                         .build(),
-                                p.patternRecognition(childBuilder -> childBuilder
-                                        .partitionBy(ImmutableList.of(p.symbol("a")))
-                                        .addMeasure(
-                                                p.symbol("child_measure"),
-                                                PlanBuilder.expression("pointer"),
-                                                ImmutableMap.of("pointer", new ScalarValuePointer(
-                                                        new LogicalIndexPointer(ImmutableSet.of(new IrLabel("X")), false, true, 0, 0),
-                                                        new Symbol("b"))),
-                                                BIGINT)
-                                        .rowsPerMatch(ONE)
-                                        .pattern(new IrLabel("X"))
-                                        .addVariableDefinition(new IrLabel("X"), PlanBuilder.expression("true"))
-                                        .source(p.values(p.symbol("a"), p.symbol("b"))))))))
+                                p.patternRecognition(childBuilder -> {
+                                    childBuilder
+                                            .partitionBy(ImmutableList.of(p.symbol("a")))
+                                            .addMeasure(
+                                                    p.symbol("child_measure"),
+                                                    new Reference(BIGINT, "pointer"),
+                                                    ImmutableMap.of("pointer", new ScalarValuePointer(
+                                                            new LogicalIndexPointer(ImmutableSet.of(new IrLabel("X")), false, true, 0, 0),
+                                                            new Symbol(BIGINT, "b"))))
+                                            .rowsPerMatch(ONE)
+                                            .pattern(new IrLabel("X"))
+                                            .addVariableDefinition(new IrLabel("X"), TRUE)
+                                            .source(p.values(p.symbol("a"), p.symbol("b")));
+                                })))))
                 .matches(
                         project(
                                 ImmutableMap.of(
-                                        "a", PlanMatchPattern.expression("a"),
-                                        "parent_measure", PlanMatchPattern.expression("parent_measure")),
+                                        "a", expression(new Reference(BIGINT, "a")),
+                                        "parent_measure", expression(new Reference(BIGINT, "parent_measure"))),
                                 project(
                                         ImmutableMap.of(
-                                                "a", PlanMatchPattern.expression("a"),
-                                                "parent_measure", PlanMatchPattern.expression("parent_measure"),
-                                                "child_measure", PlanMatchPattern.expression("child_measure"),
-                                                "expression_2", PlanMatchPattern.expression("a + a")),
+                                                "a", expression(new Reference(BIGINT, "a")),
+                                                "parent_measure", expression(new Reference(BIGINT, "parent_measure")),
+                                                "child_measure", expression(new Reference(BIGINT, "child_measure")),
+                                                "expression_2", expression(new Call(ADD_BIGINT, ImmutableList.of(new Reference(BIGINT, "a"), new Reference(BIGINT, "a"))))),
                                         patternRecognition(builder -> builder
                                                         .specification(specification(ImmutableList.of("a"), ImmutableList.of(), ImmutableMap.of()))
                                                         .addMeasure(
                                                                 "parent_measure",
-                                                                PlanBuilder.expression("pointer"),
+                                                                new Reference(BIGINT, "pointer"),
                                                                 ImmutableMap.of("pointer", new ScalarValuePointer(
                                                                         new LogicalIndexPointer(ImmutableSet.of(new IrLabel("X")), true, true, 0, 0),
-                                                                        new Symbol("expression_1"))),
+                                                                        new Symbol(UNKNOWN, "expression_1"))),
                                                                 BIGINT)
                                                         .addMeasure(
                                                                 "child_measure",
-                                                                PlanBuilder.expression("pointer"),
+                                                                new Reference(BIGINT, "pointer"),
                                                                 ImmutableMap.of("pointer", new ScalarValuePointer(
                                                                         new LogicalIndexPointer(ImmutableSet.of(new IrLabel("X")), false, true, 0, 0),
-                                                                        new Symbol("b"))),
+                                                                        new Symbol(UNKNOWN, "b"))),
                                                                 BIGINT)
                                                         .rowsPerMatch(ONE)
                                                         .pattern(new IrLabel("X"))
-                                                        .addVariableDefinition(new IrLabel("X"), PlanBuilder.expression("true")),
+                                                        .addVariableDefinition(new IrLabel("X"), TRUE),
                                                 project(
                                                         ImmutableMap.of(
-                                                                "a", PlanMatchPattern.expression("a"),
-                                                                "b", PlanMatchPattern.expression("b"),
-                                                                "expression_1", PlanMatchPattern.expression("a * a")),
+                                                                "a", expression(new Reference(BIGINT, "a")),
+                                                                "b", expression(new Reference(BIGINT, "b")),
+                                                                "expression_1", PlanMatchPattern.expression(new Call(MULTIPLY_BIGINT, ImmutableList.of(new Reference(BIGINT, "a"), new Reference(BIGINT, "a"))))),
                                                         values("a", "b"))))));
     }
 
@@ -708,35 +716,35 @@ public class TestMergePatternRecognitionNodes
                         .pattern(new IrLabel("X"))
                         .addVariableDefinition(
                                 new IrLabel("X"),
-                                expression("c > 5"),
-                                ImmutableMap.of("c", new AggregationValuePointer(
+                                new Comparison(GREATER_THAN, new Reference(BIGINT, "c"), new Constant(BIGINT, 5L)),
+                                ImmutableMap.of(new Symbol(BIGINT, "c"), new AggregationValuePointer(
                                         count,
                                         new AggregatedSetDescriptor(ImmutableSet.of(), true),
-                                        ImmutableList.of(expression("a")),
+                                        ImmutableList.of(new Reference(BIGINT, "a")),
                                         Optional.empty(),
                                         Optional.empty())))
                         .source(p.patternRecognition(childBuilder -> childBuilder
                                 .pattern(new IrLabel("X"))
                                 .addVariableDefinition(
                                         new IrLabel("X"),
-                                        expression("c > 5"),
-                                        ImmutableMap.of("c", new AggregationValuePointer(
+                                        new Comparison(GREATER_THAN, new Reference(BIGINT, "c"), new Constant(BIGINT, 5L)),
+                                        ImmutableMap.of(new Symbol(BIGINT, "c"), new AggregationValuePointer(
                                                 count,
                                                 new AggregatedSetDescriptor(ImmutableSet.of(), true),
-                                                ImmutableList.of(expression("a")),
+                                                ImmutableList.of(new Reference(BIGINT, "a")),
                                                 Optional.empty(),
                                                 Optional.empty())))
-                                .source(p.values(p.symbol("a")))))))
+                                .source(p.values(p.symbol("a", BIGINT)))))))
                 .matches(
                         patternRecognition(builder -> builder
                                         .pattern(new IrLabel("X"))
                                         .addVariableDefinition(
                                                 new IrLabel("X"),
-                                                expression("c > 5"),
+                                                new Comparison(GREATER_THAN, new Reference(BIGINT, "c"), new Constant(BIGINT, 5L)),
                                                 ImmutableMap.of("c", new AggregationValuePointer(
                                                         count,
                                                         new AggregatedSetDescriptor(ImmutableSet.of(), true),
-                                                        ImmutableList.of(expression("a")),
+                                                        ImmutableList.of(new Reference(BIGINT, "a")),
                                                         Optional.empty(),
                                                         Optional.empty()))),
                                 values("a")));

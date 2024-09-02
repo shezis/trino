@@ -14,6 +14,7 @@
 package io.trino.filesystem.s3;
 
 import io.trino.filesystem.Location;
+import io.trino.filesystem.TrinoFileSystemException;
 import io.trino.filesystem.TrinoInputStream;
 import software.amazon.awssdk.core.ResponseInputStream;
 import software.amazon.awssdk.core.exception.AbortedException;
@@ -190,9 +191,16 @@ final class S3InputStream
         closeStream();
 
         try {
-            String range = "bytes=%s-".formatted(nextReadPosition);
-            GetObjectRequest rangeRequest = request.toBuilder().range(range).build();
+            GetObjectRequest rangeRequest = request;
+            if (nextReadPosition != 0) {
+                String range = "bytes=%s-".formatted(nextReadPosition);
+                rangeRequest = request.toBuilder().range(range).build();
+            }
             in = client.getObject(rangeRequest);
+            // a workaround for https://github.com/aws/aws-sdk-java-v2/issues/3538
+            if (in.response().contentLength() != null && in.response().contentLength() == 0) {
+                in = new ResponseInputStream<>(in.response(), nullInputStream());
+            }
             streamPosition = nextReadPosition;
         }
         catch (NoSuchKeyException e) {
@@ -201,7 +209,7 @@ final class S3InputStream
             throw ex;
         }
         catch (SdkException e) {
-            throw new IOException("Failed to open S3 file: " + location, e);
+            throw new TrinoFileSystemException("Failed to open S3 file: " + location, e);
         }
     }
 
@@ -211,10 +219,10 @@ final class S3InputStream
             return;
         }
 
-        try (var ignored = in) {
+        try (var _ = in) {
             in.abort();
         }
-        catch (AbortedException | IOException ignored) {
+        catch (AbortedException | IOException _) {
         }
         finally {
             in = null;

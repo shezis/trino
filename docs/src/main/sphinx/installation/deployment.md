@@ -1,11 +1,9 @@
 # Deploying Trino
 
 (requirements)=
-
 ## Requirements
 
 (requirements-linux)=
-
 ### Linux operating system
 
 - 64-bit required
@@ -32,12 +30,12 @@
 % These values are used in core/trino-server-rpm/src/main/resources/dist/etc/init.d/trino
 
 (requirements-java)=
-
 ### Java runtime environment
 
-Trino requires a 64-bit version of Java 21, with a minimum required version of 21.0.1.
-Earlier major versions such as Java 8, Java 11 or Java 17 do not work.
-Newer major versions such as Java 22 are not supported -- they may work, but are not tested.
+Trino requires a 64-bit version of Java 22, with a minimum required version of
+22.0.1 and a recommendation to use the latest patch version. Earlier major versions
+such as Java 8, Java 11, Java 17 or Java 21 do not work. Newer versions such as
+Java 23 are not supported -- they may work, but are not tested.
 
 We recommend using the Eclipse Temurin OpenJDK distribution from
 [Adoptium](https://adoptium.net/) as the JDK for Trino, as Trino is tested
@@ -45,7 +43,6 @@ against that distribution. Eclipse Temurin is also the JDK used by the [Trino
 Docker image](https://hub.docker.com/r/trinodb/trino).
 
 (requirements-python)=
-
 ### Python
 
 - version 2.6.x, 2.7.x, or 3.x
@@ -82,7 +79,6 @@ This holds the following configuration:
   in the respective connector documentation.
 
 (node-properties)=
-
 ### Node properties
 
 The node properties file, `etc/node.properties`, contains configuration
@@ -115,7 +111,6 @@ The above properties are described below:
   logs and other data here.
 
 (jvm-config)=
-
 ### JVM config
 
 The JVM config file, `etc/jvm.config`, contains a list of command line
@@ -142,9 +137,6 @@ The following provides a good starting point for creating `etc/jvm.config`:
 -Djdk.attach.allowAttachSelf=true
 -Djdk.nio.maxCachedBufferSize=2000000
 -Dfile.encoding=UTF-8
-# Reduce starvation of threads by GClocker, recommend to set about the number of cpu cores (JDK-8192647)
--XX:+UnlockDiagnosticVMOptions
--XX:GCLockerRetryAllocationCount=32
 # Allow loading dynamic agent used by JOL
 -XX:+EnableDynamicAgentLoading
 ```
@@ -177,10 +169,7 @@ prevents Trino from starting. You can workaround this by overriding the
 temporary directory by adding `-Djava.io.tmpdir=/path/to/other/tmpdir` to the
 list of JVM options.
 
-We set GCLocker retry allocation count (`-XX:GCLockerRetryAllocationCount=32`) to avoid OOM too early (see [JDK-8192647](https://bugs.openjdk.org/browse/JDK-8192647))
-
 (config-properties)=
-
 ### Config properties
 
 The config properties file, `etc/config.properties`, contains the
@@ -229,8 +218,8 @@ These properties require some explanation:
   available for the critical task of scheduling, managing and monitoring
   query execution.
 - `http-server.http.port`:
-  Specifies the port for the HTTP server. Trino uses HTTP for all
-  communication, internal and external.
+  Specifies the port for the [HTTP server](/admin/properties-http-server).
+  Trino uses HTTP for all communication, internal and external.
 - `discovery.uri`:
   The Trino coordinator has a discovery service that is used by all the nodes
   to find each other. Every Trino instance registers itself with the discovery
@@ -253,7 +242,6 @@ properties for topics such as {doc}`/admin/properties-general`,
 {doc}`/admin/properties-web-interface`, and others.
 
 (log-levels)=
-
 ### Log levels
 
 The optional log levels file, `etc/log.properties`, allows setting the
@@ -273,7 +261,6 @@ thus the above example does not actually change anything.
 There are four levels: `DEBUG`, `INFO`, `WARN` and `ERROR`.
 
 (catalog-properties)=
-
 ### Catalog properties
 
 Trino accesses data via *connectors*, which are mounted in catalogs.
@@ -295,7 +282,6 @@ connector.name=jmx
 See {doc}`/connector` for more information about configuring connectors.
 
 (running-trino)=
-
 ## Running Trino
 
 The installation provides a `bin/launcher` script, which requires Python in

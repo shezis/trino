@@ -38,7 +38,10 @@ import static java.util.concurrent.TimeUnit.SECONDS;
 
 @DefunctConfig({
         "delta.experimental.ignore-checkpoint-write-failures",
-        "delta.legacy-create-table-with-existing-location.enabled"})
+        "delta.legacy-create-table-with-existing-location.enabled",
+        "delta.max-initial-splits",
+        "delta.max-initial-split-size"
+})
 public class DeltaLakeConfig
 {
     public static final String EXTENDED_STATISTICS_ENABLED = "delta.extended-statistics.enabled";
@@ -56,8 +59,6 @@ public class DeltaLakeConfig
     private int domainCompactionThreshold = 1000;
     private int maxOutstandingSplits = 1_000;
     private int maxSplitsPerSecond = Integer.MAX_VALUE;
-    private int maxInitialSplits = 200;
-    private DataSize maxInitialSplitSize;
     private DataSize maxSplitSize = DataSize.of(64, MEGABYTE);
     private double minimumAssignedSplitWeight = 0.05;
     private int maxPartitionsPerWriter = 100;
@@ -73,6 +74,8 @@ public class DeltaLakeConfig
     private boolean collectExtendedStatisticsOnWrite = true;
     private HiveCompressionCodec compressionCodec = HiveCompressionCodec.SNAPPY;
     private long perTransactionMetastoreCacheMaximumSize = 1000;
+    private boolean storeTableMetadataEnabled;
+    private int storeTableMetadataThreads = 5;
     private boolean deleteSchemaLocationsFallback;
     private String parquetTimeZone = TimeZone.getDefault().getID();
     private DataSize targetMaxFileSize = DataSize.of(1, GIGABYTE);
@@ -81,6 +84,7 @@ public class DeltaLakeConfig
     private boolean registerTableProcedureEnabled;
     private boolean projectionPushdownEnabled = true;
     private boolean queryPartitionFilterRequired;
+    private boolean deletionVectorsEnabled;
 
     public Duration getMetadataCacheTtl()
     {
@@ -173,34 +177,6 @@ public class DeltaLakeConfig
     public DeltaLakeConfig setMaxSplitsPerSecond(int maxSplitsPerSecond)
     {
         this.maxSplitsPerSecond = maxSplitsPerSecond;
-        return this;
-    }
-
-    public int getMaxInitialSplits()
-    {
-        return maxInitialSplits;
-    }
-
-    @Config("delta.max-initial-splits")
-    public DeltaLakeConfig setMaxInitialSplits(int maxInitialSplits)
-    {
-        this.maxInitialSplits = maxInitialSplits;
-        return this;
-    }
-
-    @NotNull
-    public DataSize getMaxInitialSplitSize()
-    {
-        if (maxInitialSplitSize == null) {
-            return DataSize.ofBytes(maxSplitSize.toBytes() / 2).to(maxSplitSize.getUnit());
-        }
-        return maxInitialSplitSize;
-    }
-
-    @Config("delta.max-initial-split-size")
-    public DeltaLakeConfig setMaxInitialSplitSize(DataSize maxInitialSplitSize)
-    {
-        this.maxInitialSplitSize = maxInitialSplitSize;
         return this;
     }
 
@@ -404,6 +380,33 @@ public class DeltaLakeConfig
         return this;
     }
 
+    public boolean isStoreTableMetadataEnabled()
+    {
+        return storeTableMetadataEnabled;
+    }
+
+    @Config("delta.metastore.store-table-metadata")
+    @ConfigDescription("Store table metadata in metastore")
+    public DeltaLakeConfig setStoreTableMetadataEnabled(boolean storeTableMetadataEnabled)
+    {
+        this.storeTableMetadataEnabled = storeTableMetadataEnabled;
+        return this;
+    }
+
+    @Min(0) // Allow 0 to use the same thread for testing purpose
+    public int getStoreTableMetadataThreads()
+    {
+        return storeTableMetadataThreads;
+    }
+
+    @Config("delta.metastore.store-table-metadata-threads")
+    @ConfigDescription("Number of threads used for storing table metadata in metastore")
+    public DeltaLakeConfig setStoreTableMetadataThreads(int storeTableMetadataThreads)
+    {
+        this.storeTableMetadataThreads = storeTableMetadataThreads;
+        return this;
+    }
+
     public boolean isDeleteSchemaLocationsFallback()
     {
         return this.deleteSchemaLocationsFallback;
@@ -514,6 +517,19 @@ public class DeltaLakeConfig
     public DeltaLakeConfig setQueryPartitionFilterRequired(boolean queryPartitionFilterRequired)
     {
         this.queryPartitionFilterRequired = queryPartitionFilterRequired;
+        return this;
+    }
+
+    public boolean isDeletionVectorsEnabled()
+    {
+        return deletionVectorsEnabled;
+    }
+
+    @Config("delta.deletion-vectors-enabled")
+    @ConfigDescription("Enable deletion vectors by default for new tables")
+    public DeltaLakeConfig setDeletionVectorsEnabled(boolean deletionVectorsEnabled)
+    {
+        this.deletionVectorsEnabled = deletionVectorsEnabled;
         return this;
     }
 }

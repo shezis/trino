@@ -20,8 +20,8 @@ import com.google.common.cache.CacheStats;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.util.concurrent.UncheckedExecutionException;
 import com.google.inject.Inject;
-import io.airlift.jmx.CacheStatsMBean;
 import io.airlift.units.Duration;
+import io.trino.cache.CacheStatsMBean;
 import io.trino.cache.EvictableCacheBuilder;
 import io.trino.plugin.base.session.SessionPropertiesProvider;
 import io.trino.plugin.jdbc.IdentityCacheMapping.IdentityCacheKey;
@@ -36,6 +36,8 @@ import io.trino.spi.connector.ConnectorSplitSource;
 import io.trino.spi.connector.ConnectorTableMetadata;
 import io.trino.spi.connector.JoinStatistics;
 import io.trino.spi.connector.JoinType;
+import io.trino.spi.connector.RelationColumnsMetadata;
+import io.trino.spi.connector.RelationCommentMetadata;
 import io.trino.spi.connector.SchemaTableName;
 import io.trino.spi.connector.SystemTable;
 import io.trino.spi.connector.TableScanRedirectApplicationResult;
@@ -51,6 +53,7 @@ import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -80,11 +83,12 @@ public class CachingJdbcClient
     private final IdentityCacheMapping identityMapping;
 
     private final Cache<IdentityCacheKey, Set<String>> schemaNamesCache;
-    private final Cache<TableNamesCacheKey, List<SchemaTableName>> tableNamesCache;
+    private final Cache<TableListingCacheKey, List<SchemaTableName>> tableNamesCache;
     private final Cache<TableHandlesByNameCacheKey, Optional<JdbcTableHandle>> tableHandlesByNameCache;
     private final Cache<TableHandlesByQueryCacheKey, JdbcTableHandle> tableHandlesByQueryCache;
     private final Cache<ProcedureHandlesByQueryCacheKey, JdbcProcedureHandle> procedureHandlesByQueryCache;
     private final Cache<ColumnsCacheKey, List<JdbcColumnHandle>> columnsCache;
+    private final Cache<TableListingCacheKey, List<RelationCommentMetadata>> tableCommentsCache;
     private final Cache<JdbcTableHandle, TableStatistics> statisticsCache;
 
     @Inject
@@ -132,6 +136,7 @@ public class CachingJdbcClient
         tableHandlesByQueryCache = buildCache(ticker, cacheMaximumSize, metadataCachingTtl);
         procedureHandlesByQueryCache = buildCache(ticker, cacheMaximumSize, metadataCachingTtl);
         columnsCache = buildCache(ticker, cacheMaximumSize, metadataCachingTtl);
+        tableCommentsCache = buildCache(ticker, cacheMaximumSize, metadataCachingTtl);
         statisticsCache = buildCache(ticker, cacheMaximumSize, statisticsCachingTtl);
     }
 
@@ -163,7 +168,7 @@ public class CachingJdbcClient
     @Override
     public List<SchemaTableName> getTableNames(ConnectorSession session, Optional<String> schema)
     {
-        TableNamesCacheKey key = new TableNamesCacheKey(getIdentityKey(session), schema);
+        TableListingCacheKey key = new TableListingCacheKey(getIdentityKey(session), schema);
         return get(tableNamesCache, key, () -> delegate.getTableNames(session, schema));
     }
 
@@ -175,6 +180,21 @@ public class CachingJdbcClient
         }
         ColumnsCacheKey key = new ColumnsCacheKey(getIdentityKey(session), getSessionProperties(session), tableHandle.getRequiredNamedRelation().getSchemaTableName());
         return get(columnsCache, key, () -> delegate.getColumns(session, tableHandle));
+    }
+
+    @Override
+    public Iterator<RelationColumnsMetadata> getAllTableColumns(ConnectorSession session, Optional<String> schema)
+    {
+        // TODO should this cache the list (once iterator is completed)?
+        // TODO should it cache the iterator (smartly) before it's completed? (sharing failures?)
+        // TODO should this put objects into tableCache when iterating?
+        return delegate.getAllTableColumns(session, schema);
+    }
+
+    @Override
+    public List<RelationCommentMetadata> getAllTableComments(ConnectorSession session, Optional<String> schema)
+    {
+        return get(tableCommentsCache, new TableListingCacheKey(getIdentityKey(session), schema), () -> delegate.getAllTableComments(session, schema));
     }
 
     @Override
@@ -217,6 +237,12 @@ public class CachingJdbcClient
     public Optional<ParameterizedExpression> convertPredicate(ConnectorSession session, ConnectorExpression expression, Map<String, ColumnHandle> assignments)
     {
         return delegate.convertPredicate(session, expression, assignments);
+    }
+
+    @Override
+    public Optional<JdbcExpression> convertProjection(ConnectorSession session, JdbcTableHandle handle, ConnectorExpression expression, Map<String, ColumnHandle> assignments)
+    {
+        return delegate.convertProjection(session, handle, expression, assignments);
     }
 
     @Override
@@ -362,7 +388,7 @@ public class CachingJdbcClient
     public void commitCreateTable(ConnectorSession session, JdbcOutputTableHandle handle, Set<Long> pageSinkIds)
     {
         delegate.commitCreateTable(session, handle, pageSinkIds);
-        invalidateTableCaches(new SchemaTableName(handle.getSchemaName(), handle.getTableName()));
+        invalidateTableCaches(handle.getRemoteTableName().getSchemaTableName());
     }
 
     @Override
@@ -375,7 +401,7 @@ public class CachingJdbcClient
     public void finishInsertTable(ConnectorSession session, JdbcOutputTableHandle handle, Set<Long> pageSinkIds)
     {
         delegate.finishInsertTable(session, handle, pageSinkIds);
-        onDataChanged(new SchemaTableName(handle.getSchemaName(), handle.getTableName()));
+        onDataChanged(handle.getRemoteTableName().getSchemaTableName());
     }
 
     @Override
@@ -401,6 +427,13 @@ public class CachingJdbcClient
     public String buildInsertSql(JdbcOutputTableHandle handle, List<WriteFunction> columnWriters)
     {
         return delegate.buildInsertSql(handle, columnWriters);
+    }
+
+    @Override
+    public Connection getConnection(ConnectorSession session)
+            throws SQLException
+    {
+        return delegate.getConnection(session);
     }
 
     @Override
@@ -625,6 +658,7 @@ public class CachingJdbcClient
         tableHandlesByNameCache.invalidateAll();
         tableHandlesByQueryCache.invalidateAll();
         columnsCache.invalidateAll();
+        tableCommentsCache.invalidateAll();
         statisticsCache.invalidateAll();
     }
 
@@ -656,6 +690,7 @@ public class CachingJdbcClient
         invalidateAllIf(tableHandlesByNameCache, key -> key.tableName.equals(schemaTableName));
         tableHandlesByQueryCache.invalidateAll();
         invalidateAllIf(tableNamesCache, key -> key.schemaName.equals(Optional.of(schemaTableName.getSchemaName())));
+        invalidateAllIf(tableCommentsCache, key -> key.schemaName.equals(Optional.of(schemaTableName.getSchemaName())));
         invalidateAllIf(statisticsCache, key -> key.mayReference(schemaTableName));
     }
 
@@ -743,9 +778,9 @@ public class CachingJdbcClient
         }
     }
 
-    private record TableNamesCacheKey(IdentityCacheKey identity, Optional<String> schemaName)
+    private record TableListingCacheKey(IdentityCacheKey identity, Optional<String> schemaName)
     {
-        private TableNamesCacheKey
+        private TableListingCacheKey
         {
             requireNonNull(identity, "identity is null");
             requireNonNull(schemaName, "schemaName is null");

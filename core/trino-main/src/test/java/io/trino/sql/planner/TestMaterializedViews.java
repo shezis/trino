@@ -16,12 +16,14 @@ package io.trino.sql.planner;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import io.trino.Session;
-import io.trino.SystemSessionProperties;
 import io.trino.connector.StaticConnectorFactory;
 import io.trino.metadata.MaterializedViewDefinition;
 import io.trino.metadata.Metadata;
 import io.trino.metadata.QualifiedObjectName;
+import io.trino.metadata.ResolvedFunction;
+import io.trino.metadata.TestingFunctionResolution;
 import io.trino.metadata.ViewColumn;
+import io.trino.spi.RefreshType;
 import io.trino.spi.connector.CatalogSchemaTableName;
 import io.trino.spi.connector.ColumnMetadata;
 import io.trino.spi.connector.Connector;
@@ -30,6 +32,7 @@ import io.trino.spi.connector.ConnectorSession;
 import io.trino.spi.connector.ConnectorTableMetadata;
 import io.trino.spi.connector.ConnectorTransactionHandle;
 import io.trino.spi.connector.SchemaTableName;
+import io.trino.spi.function.OperatorType;
 import io.trino.spi.security.Identity;
 import io.trino.spi.security.ViewExpression;
 import io.trino.spi.transaction.IsolationLevel;
@@ -37,11 +40,16 @@ import io.trino.spi.type.TestingTypeManager;
 import io.trino.spi.type.Type;
 import io.trino.spi.type.TypeManager;
 import io.trino.spi.type.TypeParameter;
+import io.trino.sql.ir.Call;
+import io.trino.sql.ir.Cast;
+import io.trino.sql.ir.Comparison;
+import io.trino.sql.ir.Constant;
+import io.trino.sql.ir.Reference;
 import io.trino.sql.planner.assertions.BasePlanTest;
-import io.trino.sql.tree.GenericLiteral;
 import io.trino.testing.PlanTester;
 import io.trino.testing.TestingAccessControlManager;
 import io.trino.testing.TestingMetadata;
+import io.trino.type.DateTimes;
 import org.junit.jupiter.api.Test;
 
 import java.time.Instant;
@@ -50,11 +58,19 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
+import static io.trino.execution.querystats.PlanOptimizersStatsCollector.createPlanOptimizersStatsCollector;
+import static io.trino.execution.warnings.WarningCollector.NOOP;
+import static io.trino.spi.RefreshType.FULL;
+import static io.trino.spi.RefreshType.INCREMENTAL;
 import static io.trino.spi.connector.SaveMode.FAIL;
 import static io.trino.spi.type.BigintType.BIGINT;
 import static io.trino.spi.type.TimestampWithTimeZoneParametricType.TIMESTAMP_WITH_TIME_ZONE;
+import static io.trino.spi.type.TimestampWithTimeZoneType.TIMESTAMP_TZ_MILLIS;
+import static io.trino.spi.type.TimestampWithTimeZoneType.createTimestampWithTimeZoneType;
 import static io.trino.spi.type.TinyintType.TINYINT;
 import static io.trino.spi.type.VarcharType.VARCHAR;
+import static io.trino.sql.ir.Comparison.Operator.LESS_THAN;
+import static io.trino.sql.planner.LogicalPlanner.Stage.OPTIMIZED_AND_VALIDATED;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.anyTree;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.exchange;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.expression;
@@ -68,11 +84,17 @@ import static io.trino.sql.planner.plan.ExchangeNode.Scope.LOCAL;
 import static io.trino.testing.TestingHandles.TEST_CATALOG_NAME;
 import static io.trino.testing.TestingMetadata.STALE_MV_STALENESS;
 import static io.trino.testing.TestingSession.testSessionBuilder;
+import static org.assertj.core.api.Assertions.assertThat;
 
 public class TestMaterializedViews
         extends BasePlanTest
 {
+    private static final TestingFunctionResolution FUNCTIONS = new TestingFunctionResolution();
+    private static final ResolvedFunction ADD_BIGINT = FUNCTIONS.resolveOperator(OperatorType.ADD, ImmutableList.of(BIGINT, BIGINT));
+
     private static final String SCHEMA = "tiny";
+
+    private final TestingMetadata testingConnectorMetadata = new TestingMetadata();
 
     @Override
     protected PlanTester createPlanTester()
@@ -81,8 +103,6 @@ public class TestMaterializedViews
                 .setCatalog(TEST_CATALOG_NAME)
                 .setSchema(SCHEMA)
                 .setSystemProperty("task_concurrency", "1"); // these tests don't handle exchanges from local parallel
-
-        TestingMetadata testingConnectorMetadata = new TestingMetadata();
 
         PlanTester planTester = PlanTester.create(sessionBuilder.build());
         planTester.createCatalog(TEST_CATALOG_NAME, new StaticConnectorFactory("test", new TestMaterializedViewConnector(testingConnectorMetadata)), ImmutableMap.of());
@@ -251,9 +271,36 @@ public class TestMaterializedViews
                     false);
             return null;
         });
+
         testingConnectorMetadata.markMaterializedViewIsFresh(materializedViewWithTimestamp.asSchemaTableName());
 
         return planTester;
+    }
+
+    private void createMaterializedView(String materializedViewName, String query)
+    {
+        Metadata metadata = getPlanTester().getPlannerContext().getMetadata();
+        QualifiedObjectName matViewName = new QualifiedObjectName(TEST_CATALOG_NAME, SCHEMA, materializedViewName);
+        MaterializedViewDefinition matViewDefinition = new MaterializedViewDefinition(
+                query,
+                Optional.of(TEST_CATALOG_NAME),
+                Optional.of(SCHEMA),
+                ImmutableList.of(new ViewColumn("a", BIGINT.getTypeId(), Optional.empty()), new ViewColumn("b", BIGINT.getTypeId(), Optional.empty())),
+                Optional.of(STALE_MV_STALENESS.plusHours(1)),
+                Optional.empty(),
+                Identity.ofUser("some user"),
+                ImmutableList.of(),
+                Optional.of(new CatalogSchemaTableName(TEST_CATALOG_NAME, SCHEMA, "storage_table")));
+        getPlanTester().inTransaction(session -> {
+            metadata.createMaterializedView(
+                    session,
+                    matViewName,
+                    matViewDefinition,
+                    ImmutableMap.of(),
+                    false,
+                    false);
+            return null;
+        });
     }
 
     @Test
@@ -268,9 +315,6 @@ public class TestMaterializedViews
     public void testNotFreshMaterializedView()
     {
         Session defaultSession = getPlanTester().getDefaultSession();
-        Session legacyGracePeriod = Session.builder(defaultSession)
-                .setSystemProperty(SystemSessionProperties.LEGACY_MATERIALIZED_VIEW_GRACE_PERIOD, "true")
-                .build();
         Session futureSession = Session.builder(defaultSession)
                 .setStart(Instant.now().plus(1, ChronoUnit.DAYS))
                 .build();
@@ -283,14 +327,48 @@ public class TestMaterializedViews
 
         assertPlan(
                 "SELECT * FROM not_fresh_materialized_view",
-                legacyGracePeriod,
-                anyTree(
-                        tableScan("test_table")));
-        assertPlan(
-                "SELECT * FROM not_fresh_materialized_view",
                 futureSession,
                 anyTree(
                         tableScan("test_table")));
+    }
+
+    @Test
+    public void testRefreshTypes()
+    {
+        createMaterializedView("simple_materialized_view", "SELECT a as new_name, b FROM test_table WHERE a is not null and b > 1");
+        Optional<RefreshType> refreshType = getRefreshType("simple_materialized_view");
+        assertThat(refreshType.isPresent()).isTrue();
+        assertThat(refreshType.get()).isEqualTo(INCREMENTAL);
+
+        createMaterializedView("aggregation_materialized_view", "SELECT a, count(*) FROM test_table GROUP BY a");
+        refreshType = getRefreshType("aggregation_materialized_view");
+        assertThat(refreshType.isPresent()).isTrue();
+        assertThat(refreshType.get()).isEqualTo(FULL);
+
+        createMaterializedView("join_materialized_view", "SELECT a.a, b.b FROM test_table a JOIN test_table b on a.a = b.a");
+        refreshType = getRefreshType("join_materialized_view");
+        assertThat(refreshType.isPresent()).isTrue();
+        assertThat(refreshType.get()).isEqualTo(FULL);
+
+        createMaterializedView("distinct_materialized_view", "SELECT distinct a, b FROM test_table");
+        refreshType = getRefreshType("distinct_materialized_view");
+        assertThat(refreshType.isPresent()).isTrue();
+        assertThat(refreshType.get()).isEqualTo(FULL);
+
+        createMaterializedView("table_subquery_materialized_view", "SELECT a, b FROM (SELECT a, b FROM (VALUES (1, 2), (3, 4)) t(a, b))");
+        refreshType = getRefreshType("table_subquery_materialized_view");
+        assertThat(refreshType.isPresent()).isTrue();
+        assertThat(refreshType.get()).isEqualTo(FULL);
+
+        createMaterializedView("where_subquery_materialized_view", "SELECT a, b FROM test_table WHERE b in (SELECT b FROM test_table WHERE a < 0)");
+        refreshType = getRefreshType("where_subquery_materialized_view");
+        assertThat(refreshType.isPresent()).isTrue();
+        assertThat(refreshType.get()).isEqualTo(FULL);
+
+        createMaterializedView("union_view", "SELECT a, b FROM test_table a WHERE a.b in (6, 9) UNION ALL SELECT a, b FROM test_table b WHERE b.b in (1, 5)");
+        refreshType = getRefreshType("union_view");
+        assertThat(refreshType.isPresent()).isTrue();
+        assertThat(refreshType.get()).isEqualTo(FULL);
     }
 
     @Test
@@ -306,8 +384,8 @@ public class TestMaterializedViews
                 anyTree(
                         project(
                                 ImmutableMap.of(
-                                        "A_CAST", expression("CAST(A as BIGINT) + BIGINT '1'"),
-                                        "B_CAST", expression("CAST(B as BIGINT)")),
+                                        "A_CAST", expression(new Call(ADD_BIGINT, ImmutableList.of(new Cast(new Reference(BIGINT, "A"), BIGINT), new Constant(BIGINT, 1L)))),
+                                        "B_CAST", expression(new Cast(new Reference(BIGINT, "B"), BIGINT))),
                                 tableScan("storage_table_with_casts", ImmutableMap.of("A", "a", "B", "b")))));
     }
 
@@ -318,13 +396,15 @@ public class TestMaterializedViews
                 anyTree(
                         tableWriter(List.of("A_CAST", "B_CAST"), List.of("a", "b"),
                                 exchange(LOCAL,
-                                        project(Map.of("A_CAST", expression("CAST(A AS tinyint)"), "B_CAST", expression("CAST(B AS varchar)")),
+                                        project(Map.of(
+                                                        "A_CAST", expression(new Cast(new Reference(BIGINT, "A"), TINYINT)),
+                                                        "B_CAST", expression(new Cast(new Reference(BIGINT, "B"), VARCHAR))),
                                                 tableScan("test_table", Map.of("A", "a", "B", "b")))))));
 
         // No-op REFRESH
         assertPlan("REFRESH MATERIALIZED VIEW materialized_view_with_casts",
                 output(
-                        values(List.of("rows"), List.of(List.of(new GenericLiteral("BIGINT", "0"))))));
+                        values(List.of("rows"), List.of(List.of(new Constant(BIGINT, 0L))))));
     }
 
     @Test
@@ -332,10 +412,29 @@ public class TestMaterializedViews
     {
         assertPlan("SELECT * FROM timestamp_mv_test WHERE ts < TIMESTAMP '2024-01-01 00:00:00.000 America/New_York'",
                 anyTree(
-                        project(ImmutableMap.of("ts_0", expression("CAST(ts AS timestamp(3) with time zone)")),
+                        project(ImmutableMap.of("ts_0", expression(new Cast(new Reference(TIMESTAMP_TZ_MILLIS, "ts"), TIMESTAMP_TZ_MILLIS))),
                                 filter(
-                                        "CAST(ts AS timestamp(3) with time zone) < TIMESTAMP '2024-01-01 00:00:00.000 America/New_York'",
+                                        new Comparison(LESS_THAN, new Cast(new Reference(TIMESTAMP_TZ_MILLIS, "ts"), TIMESTAMP_TZ_MILLIS), new Constant(createTimestampWithTimeZoneType(3), DateTimes.parseTimestampWithTimeZone(3, "2024-01-01 00:00:00.000 America/New_York"))),
                                         tableScan("timestamp_test_storage", ImmutableMap.of("ts", "ts", "id", "id"))))));
+    }
+
+    private Optional<RefreshType> getRefreshType(String matViewTable)
+    {
+        PlanTester planTester = getPlanTester();
+        Session session = planTester.getDefaultSession();
+
+        String queryId = planTester.inTransaction(session, transactionSession -> {
+            planTester.createPlan(
+                    transactionSession,
+                    "REFRESH MATERIALIZED VIEW " + matViewTable,
+                    planTester.getPlanOptimizers(true),
+                    OPTIMIZED_AND_VALIDATED,
+                    NOOP,
+                    createPlanOptimizersStatsCollector());
+            return transactionSession.getQueryId().toString();
+        });
+
+        return testingConnectorMetadata.getRefreshType(queryId);
     }
 
     private static class TestMaterializedViewConnector

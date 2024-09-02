@@ -67,6 +67,7 @@ import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.collect.ImmutableMap.toImmutableMap;
 import static com.google.common.collect.Maps.uniqueIndex;
+import static io.trino.hive.formats.HiveClassNames.ORC_SERDE_CLASS;
 import static io.trino.memory.context.AggregatedMemoryContext.newSimpleAggregatedMemoryContext;
 import static io.trino.orc.OrcReader.INITIAL_BATCH_SIZE;
 import static io.trino.orc.OrcReader.NameBasedProjectedLayout.createProjectedLayout;
@@ -94,7 +95,6 @@ import static io.trino.plugin.hive.orc.OrcPageSource.ColumnAdaptation.mergedRowC
 import static io.trino.plugin.hive.orc.OrcPageSource.handleException;
 import static io.trino.plugin.hive.orc.OrcTypeTranslator.createCoercer;
 import static io.trino.plugin.hive.util.AcidTables.isFullAcidTable;
-import static io.trino.plugin.hive.util.HiveClassNames.ORC_SERDE_CLASS;
 import static io.trino.plugin.hive.util.HiveUtil.getDeserializerClassName;
 import static io.trino.plugin.hive.util.HiveUtil.splitError;
 import static io.trino.plugin.hive.util.SerdeConstants.SERIALIZATION_LIB;
@@ -359,7 +359,7 @@ public class OrcPageSourceFactory
                 Type readType = column.getType();
                 if (orcColumn != null) {
                     int sourceIndex = fileReadColumns.size();
-                    Optional<TypeCoercer<?, ?>> coercer = createCoercer(orcColumn.getColumnType(), readType);
+                    Optional<TypeCoercer<?, ?>> coercer = createCoercer(orcColumn.getColumnType(), orcColumn.getNestedColumns(), readType);
                     if (coercer.isPresent()) {
                         fileReadTypes.add(coercer.get().getFromType());
                         columnAdaptations.add(ColumnAdaptation.coercedColumn(sourceIndex, coercer.get()));
@@ -443,7 +443,7 @@ public class OrcPageSourceFactory
             try {
                 orcDataSource.close();
             }
-            catch (IOException ignored) {
+            catch (IOException _) {
             }
             if (e instanceof TrinoException) {
                 throw (TrinoException) e;
@@ -495,7 +495,7 @@ public class OrcPageSourceFactory
         try {
             return Optional.of(Integer.valueOf(slice.toString(UTF_8)));
         }
-        catch (RuntimeException ignored) {
+        catch (RuntimeException _) {
             return Optional.empty();
         }
     }
@@ -572,7 +572,7 @@ public class OrcPageSourceFactory
         if (!column.getColumnName().toLowerCase(ENGLISH).equals(columnName.toLowerCase(ENGLISH))) {
             throw new TrinoException(HIVE_BAD_DATA, format("ORC ACID file column %s should be named %s: %s", columnIndex, columnName, path));
         }
-        if (column.getColumnType() != columnType) {
+        if (column.getColumnType().getOrcTypeKind() != columnType) {
             throw new TrinoException(HIVE_BAD_DATA, format("ORC ACID file %s column should be type %s: %s", columnName, columnType, path));
         }
     }

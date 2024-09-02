@@ -17,7 +17,7 @@ import com.google.common.collect.ImmutableMap;
 import com.google.inject.Module;
 import io.trino.filesystem.TrinoFileSystemFactory;
 import io.trino.filesystem.local.LocalFileSystemFactory;
-import io.trino.plugin.hive.metastore.HiveMetastore;
+import io.trino.metastore.HiveMetastore;
 import io.trino.plugin.hive.metastore.file.FileHiveMetastoreConfig;
 import io.trino.spi.connector.Connector;
 import io.trino.spi.connector.ConnectorContext;
@@ -48,7 +48,7 @@ public class TestingHiveConnectorFactory
     {
         this.metastore = requireNonNull(metastore, "metastore is null");
 
-        localFileSystemRootPath.toFile().mkdirs();
+        boolean ignored = localFileSystemRootPath.toFile().mkdirs();
         this.module = binder -> {
             newMapBinder(binder, String.class, TrinoFileSystemFactory.class)
                     .addBinding("local").toInstance(new LocalFileSystemFactory(localFileSystemRootPath));

@@ -5,7 +5,7 @@
     <parent>
         <groupId>io.trino</groupId>
         <artifactId>trino-root</artifactId>
-        <version>440-SNAPSHOT</version>
+        <version>456-SNAPSHOT</version>
         <relativePath>../../pom.xml</relativePath>
     </parent>
 
@@ -14,8 +14,8 @@
     <description>Trino - OpenSearch connector</description>
 
     <properties>
-        <air.main.basedir>${project.parent.basedir}</air.main.basedir>
-        <dep.opensearch.version>2.12.0</dep.opensearch.version>
+        <air.compiler.fail-warnings>true</air.compiler.fail-warnings>
+        <dep.opensearch.version>2.16.0</dep.opensearch.version>
     </properties>
 
     <dependencies>
@@ -144,12 +144,6 @@
             <groupId>org.opensearch</groupId>
             <artifactId>opensearch</artifactId>
             <version>${dep.opensearch.version}</version>
-            <exclusions>
-                <exclusion>
-                    <groupId>org.hdrhistogram</groupId>
-                    <artifactId>HdrHistogram</artifactId>
-                </exclusion>
-            </exclusions>
         </dependency>
 
         <dependency>
@@ -162,12 +156,6 @@
             <groupId>org.opensearch</groupId>
             <artifactId>opensearch-core</artifactId>
             <version>${dep.opensearch.version}</version>
-            <exclusions>
-                <exclusion>
-                    <groupId>org.hdrhistogram</groupId>
-                    <artifactId>HdrHistogram</artifactId>
-                </exclusion>
-            </exclusions>
         </dependency>
 
         <dependency>
@@ -186,12 +174,6 @@
             <groupId>org.opensearch.client</groupId>
             <artifactId>opensearch-rest-high-level-client</artifactId>
             <version>${dep.opensearch.version}</version>
-            <exclusions>
-                <exclusion>
-                    <groupId>org.hdrhistogram</groupId>
-                    <artifactId>HdrHistogram</artifactId>
-                </exclusion>
-            </exclusions>
         </dependency>
 
         <dependency>
@@ -233,6 +215,12 @@
             <groupId>org.openjdk.jol</groupId>
             <artifactId>jol-core</artifactId>
             <scope>provided</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>com.google.errorprone</groupId>
+            <artifactId>error_prone_annotations</artifactId>
+            <scope>runtime</scope>
         </dependency>
 
         <dependency>
@@ -311,6 +299,13 @@
 
         <dependency>
             <groupId>io.trino</groupId>
+            <artifactId>trino-spi</artifactId>
+            <type>test-jar</type>
+            <scope>test</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>io.trino</groupId>
             <artifactId>trino-testing</artifactId>
             <scope>test</scope>
         </dependency>
@@ -334,14 +329,14 @@
         </dependency>
 
         <dependency>
-            <groupId>org.assertj</groupId>
-            <artifactId>assertj-core</artifactId>
+            <groupId>jakarta.servlet</groupId>
+            <artifactId>jakarta.servlet-api</artifactId>
             <scope>test</scope>
         </dependency>
 
         <dependency>
-            <groupId>org.eclipse.jetty.toolchain</groupId>
-            <artifactId>jetty-jakarta-servlet-api</artifactId>
+            <groupId>org.assertj</groupId>
+            <artifactId>assertj-core</artifactId>
             <scope>test</scope>
         </dependency>
 
@@ -366,7 +361,7 @@
         <dependency>
             <groupId>org.opensearch</groupId>
             <artifactId>opensearch-testcontainers</artifactId>
-            <version>2.0.1</version>
+            <version>2.1.0</version>
             <scope>test</scope>
         </dependency>
 

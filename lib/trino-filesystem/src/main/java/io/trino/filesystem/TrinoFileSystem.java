@@ -13,6 +13,9 @@
  */
 package io.trino.filesystem;
 
+import com.google.common.base.Throwables;
+
+import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.util.Collection;
 import java.util.Optional;
@@ -157,13 +160,13 @@ public interface TrinoFileSystem
 
     /**
      * Checks if a directory exists at the specified location. For all file system types,
-     * this returns <tt>true</tt> if the location is empty (the root of the file system)
+     * this returns {@code true} if the location is empty (the root of the file system)
      * or if any files exist within the directory, as determined by {@link #listFiles(Location)}.
      * Otherwise:
      * <ul>
-     * <li>For hierarchical file systems, this returns <tt>true</tt> if the
-     *     location is an empty directory, else it returns <tt>false</tt>.
-     * <li>For non-hierarchical file systems, an <tt>Optional.empty()</tt> is returned,
+     * <li>For hierarchical file systems, this returns {@code true} if the
+     *     location is an empty directory, else it returns {@code false}.
+     * <li>For non-hierarchical file systems, an {@code Optional.empty()} is returned,
      *     indicating that the file system has no concept of an empty directory.
      * </ul>
      *
@@ -223,4 +226,20 @@ public interface TrinoFileSystem
      */
     Optional<Location> createTemporaryDirectory(Location targetPath, String temporaryPrefix, String relativePrefix)
             throws IOException;
+
+    /**
+     * Checks whether given exception is unrecoverable, so that further retries won't help
+     * <p>
+     * By default, all third party (AWS, Azure, GCP) SDKs will retry appropriate exceptions
+     * (either client side IO errors, or 500/503), so there is no need to retry those additionally.
+     * <p>
+     * If any custom retry behavior is needed, it is advised to change SDK's retry handlers,
+     * rather than introducing outer retry loop, which combined with SDKs default retries,
+     * could lead to prolonged, unnecessary retries
+     */
+    static boolean isUnrecoverableException(Throwable throwable)
+    {
+        return Throwables.getCausalChain(throwable).stream()
+                .anyMatch(t -> t instanceof TrinoFileSystemException || t instanceof FileNotFoundException);
+    }
 }

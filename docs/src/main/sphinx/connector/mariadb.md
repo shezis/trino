@@ -55,6 +55,12 @@ properties files.
 ```{include} non-transactional-insert.fragment
 ```
 
+(mariadb-fte-support)=
+### Fault-tolerant execution support
+
+The connector supports {doc}`/admin/fault-tolerant-execution` of query
+processing. Read and write operations are both supported with any retry policy.
+
 ## Querying MariaDB
 
 The MariaDB connector provides a schema for every MariaDB *database*.
@@ -192,7 +198,7 @@ to the following table:
     to avoid implicit default values and use `NULL` as the default value.
 * - `DATETIME(n)`
   - `TIMESTAMP(n)`
-  - 
+  -
 :::
 
 No other types are supported.
@@ -275,7 +281,6 @@ Complete list of [MariaDB data types](https://mariadb.com/kb/en/data-types/).
 ```
 
 (mariadb-sql-support)=
-
 ## SQL support
 
 The connector provides read access and write access to data and metadata in
@@ -300,14 +305,20 @@ statements, the connector supports the following features:
 ```{include} sql-delete-limitation.fragment
 ```
 
-## Table functions
+### Procedures
+
+```{include} jdbc-procedures-flush.fragment
+```
+```{include} procedures-execute.fragment
+```
+
+### Table functions
 
 The connector provides specific {doc}`table functions </functions/table>` to
 access MariaDB.
 
 (mariadb-query-function)=
-
-### `query(varchar) -> table`
+#### `query(varchar) -> table`
 
 The `query` function allows you to query the underlying database directly. It
 requires syntax native to MariaDB, because the full query is pushed down and
@@ -368,7 +379,6 @@ Refer to [MariaDB documentation](https://mariadb.com/kb/en/analyze-table/) for
 additional information.
 
 (mariadb-pushdown)=
-
 ### Pushdown
 
 The connector supports pushdown for a number of operations:

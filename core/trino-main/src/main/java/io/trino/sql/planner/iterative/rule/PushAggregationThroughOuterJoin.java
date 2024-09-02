@@ -21,6 +21,10 @@ import io.trino.matching.Capture;
 import io.trino.matching.Captures;
 import io.trino.matching.Pattern;
 import io.trino.spi.type.Type;
+import io.trino.sql.ir.Coalesce;
+import io.trino.sql.ir.Constant;
+import io.trino.sql.ir.Expression;
+import io.trino.sql.ir.Row;
 import io.trino.sql.planner.PlanNodeIdAllocator;
 import io.trino.sql.planner.Symbol;
 import io.trino.sql.planner.SymbolAllocator;
@@ -35,11 +39,6 @@ import io.trino.sql.planner.plan.JoinType;
 import io.trino.sql.planner.plan.PlanNode;
 import io.trino.sql.planner.plan.ProjectNode;
 import io.trino.sql.planner.plan.ValuesNode;
-import io.trino.sql.tree.Cast;
-import io.trino.sql.tree.CoalesceExpression;
-import io.trino.sql.tree.Expression;
-import io.trino.sql.tree.NullLiteral;
-import io.trino.sql.tree.Row;
 
 import java.util.HashSet;
 import java.util.List;
@@ -52,7 +51,6 @@ import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static io.trino.SystemSessionProperties.isPushAggregationThroughOuterJoin;
 import static io.trino.matching.Capture.newCapture;
-import static io.trino.sql.analyzer.TypeSignatureTranslator.toSqlType;
 import static io.trino.sql.planner.optimizations.DistinctOutputQueryUtil.isDistinct;
 import static io.trino.sql.planner.optimizations.SymbolMapper.symbolMapper;
 import static io.trino.sql.planner.plan.AggregationNode.globalAggregation;
@@ -83,7 +81,7 @@ import static io.trino.sql.planner.plan.Patterns.source;
  *              - Tablescan (nation)
  *          - Tablescan (nation)
  * </pre>
- * </p>
+ * <p>
  * Is rewritten to:
  * <pre>
  * - Filter ("nationkey" > "avg")
@@ -262,7 +260,7 @@ public class PushAggregationThroughOuterJoin
         Assignments.Builder assignmentsBuilder = Assignments.builder();
         for (Symbol symbol : outerJoin.getOutputSymbols()) {
             if (aggregationNode.getAggregations().containsKey(symbol)) {
-                assignmentsBuilder.put(symbol, new CoalesceExpression(symbol.toSymbolReference(), sourceAggregationToOverNullMapping.get(symbol).toSymbolReference()));
+                assignmentsBuilder.put(symbol, new Coalesce(symbol.toSymbolReference(), sourceAggregationToOverNullMapping.get(symbol).toSymbolReference()));
             }
             else {
                 assignmentsBuilder.putIdentity(symbol);
@@ -280,8 +278,8 @@ public class PushAggregationThroughOuterJoin
         ImmutableList.Builder<Expression> nullLiterals = ImmutableList.builder();
         ImmutableMap.Builder<Symbol, Symbol> sourcesSymbolMappingBuilder = ImmutableMap.builder();
         for (Symbol sourceSymbol : referenceAggregation.getSource().getOutputSymbols()) {
-            Type type = symbolAllocator.getTypes().get(sourceSymbol);
-            nullLiterals.add(new Cast(new NullLiteral(), toSqlType(type)));
+            Type type = sourceSymbol.type();
+            nullLiterals.add(new Constant(type, null));
             Symbol nullSymbol = symbolAllocator.newSymbol("null", type);
             nullSymbols.add(nullSymbol);
             sourcesSymbolMappingBuilder.put(sourceSymbol, nullSymbol);
@@ -300,7 +298,7 @@ public class PushAggregationThroughOuterJoin
         for (Map.Entry<Symbol, AggregationNode.Aggregation> entry : referenceAggregation.getAggregations().entrySet()) {
             Symbol aggregationSymbol = entry.getKey();
             Aggregation overNullAggregation = mapper.map(entry.getValue());
-            Symbol overNullSymbol = symbolAllocator.newSymbol(overNullAggregation.getResolvedFunction().getSignature().getName().getFunctionName(), symbolAllocator.getTypes().get(aggregationSymbol));
+            Symbol overNullSymbol = symbolAllocator.newSymbol(overNullAggregation.getResolvedFunction().signature().getName().getFunctionName(), aggregationSymbol.type());
             aggregationsOverNullBuilder.put(overNullSymbol, overNullAggregation);
             aggregationsSymbolMappingBuilder.put(aggregationSymbol, overNullSymbol);
         }

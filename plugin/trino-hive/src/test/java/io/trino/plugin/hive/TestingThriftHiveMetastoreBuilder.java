@@ -28,6 +28,8 @@ import io.trino.plugin.hive.metastore.thrift.UgiBasedMetastoreClientFactory;
 
 import java.net.URI;
 import java.util.Optional;
+import java.util.concurrent.ExecutorService;
+import java.util.function.Consumer;
 
 import static com.google.common.base.Preconditions.checkState;
 import static io.trino.plugin.base.security.UserNameProvider.SIMPLE_USER_NAME_PROVIDER;
@@ -40,7 +42,6 @@ import static java.util.concurrent.Executors.newFixedThreadPool;
 public final class TestingThriftHiveMetastoreBuilder
 {
     private TokenAwareMetastoreClientFactory tokenAwareMetastoreClientFactory;
-    private HiveConfig hiveConfig = new HiveConfig();
     private ThriftMetastoreConfig thriftMetastoreConfig = new ThriftMetastoreConfig();
     private TrinoFileSystemFactory fileSystemFactory = new HdfsFileSystemFactory(HDFS_ENVIRONMENT, HDFS_FILE_SYSTEM_STATS);
 
@@ -84,12 +85,6 @@ public final class TestingThriftHiveMetastoreBuilder
         return this;
     }
 
-    public TestingThriftHiveMetastoreBuilder hiveConfig(HiveConfig hiveConfig)
-    {
-        this.hiveConfig = requireNonNull(hiveConfig, "hiveConfig is null");
-        return this;
-    }
-
     public TestingThriftHiveMetastoreBuilder thriftMetastoreConfig(ThriftMetastoreConfig thriftMetastoreConfig)
     {
         this.thriftMetastoreConfig = requireNonNull(thriftMetastoreConfig, "thriftMetastoreConfig is null");
@@ -102,16 +97,17 @@ public final class TestingThriftHiveMetastoreBuilder
         return this;
     }
 
-    public ThriftMetastore build()
+    public ThriftMetastore build(Consumer<AutoCloseable> registerResource)
     {
         checkState(tokenAwareMetastoreClientFactory != null, "metastore client not set");
+        ExecutorService executorService = newFixedThreadPool(thriftMetastoreConfig.getWriteStatisticsThreads());
+        registerResource.accept(executorService);
         ThriftHiveMetastoreFactory metastoreFactory = new ThriftHiveMetastoreFactory(
                 new UgiBasedMetastoreClientFactory(tokenAwareMetastoreClientFactory, SIMPLE_USER_NAME_PROVIDER, thriftMetastoreConfig),
                 new HiveMetastoreConfig().isHideDeltaLakeTables(),
-                hiveConfig.isTranslateHiveViews(),
                 thriftMetastoreConfig,
                 fileSystemFactory,
-                newFixedThreadPool(thriftMetastoreConfig.getWriteStatisticsThreads()));
+                executorService);
         return metastoreFactory.createMetastore(Optional.empty());
     }
 }

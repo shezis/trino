@@ -25,16 +25,18 @@ import io.trino.hdfs.azure.HiveAzureModule;
 import io.trino.hdfs.cos.HiveCosModule;
 import io.trino.hdfs.gcs.HiveGcsModule;
 import io.trino.hdfs.s3.HiveS3Module;
-import io.trino.plugin.base.CatalogName;
 import io.trino.plugin.base.jmx.ConnectorObjectNameGeneratorModule;
 import io.trino.plugin.base.jmx.MBeanServerModule;
 import io.trino.spi.NodeManager;
+import io.trino.spi.catalog.CatalogName;
 import org.weakref.jmx.guice.MBeanModule;
 
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+
+import static com.google.common.base.Preconditions.checkState;
 
 public final class HdfsFileSystemManager
 {
@@ -89,6 +91,7 @@ public final class HdfsFileSystemManager
 
     public TrinoFileSystemFactory create()
     {
+        checkState(lifecycleManager == null, "Already created");
         Injector injector = bootstrap.initialize();
         lifecycleManager = injector.getInstance(LifeCycleManager.class);
         return injector.getInstance(HdfsFileSystemFactory.class);

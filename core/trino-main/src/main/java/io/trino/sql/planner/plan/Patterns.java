@@ -15,9 +15,9 @@ package io.trino.sql.planner.plan;
 
 import io.trino.matching.Pattern;
 import io.trino.matching.Property;
+import io.trino.sql.ir.Expression;
 import io.trino.sql.planner.Symbol;
 import io.trino.sql.planner.iterative.Lookup;
-import io.trino.sql.tree.Expression;
 
 import java.util.List;
 import java.util.Optional;
@@ -241,6 +241,11 @@ public final class Patterns
     public static Pattern<ExceptNode> except()
     {
         return typeOf(ExceptNode.class);
+    }
+
+    public static Pattern<RemoteSourceNode> remoteSourceNode()
+    {
+        return typeOf(RemoteSourceNode.class);
     }
 
     public static Property<PlanNode, Lookup, PlanNode> source()

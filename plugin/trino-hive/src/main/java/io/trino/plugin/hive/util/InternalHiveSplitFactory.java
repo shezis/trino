@@ -16,13 +16,13 @@ package io.trino.plugin.hive.util;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import io.airlift.units.DataSize;
+import io.trino.metastore.HiveTypeName;
 import io.trino.plugin.hive.AcidInfo;
 import io.trino.plugin.hive.HiveColumnHandle;
 import io.trino.plugin.hive.HivePartitionKey;
 import io.trino.plugin.hive.HiveSplit;
 import io.trino.plugin.hive.HiveSplit.BucketConversion;
 import io.trino.plugin.hive.HiveStorageFormat;
-import io.trino.plugin.hive.HiveTypeName;
 import io.trino.plugin.hive.InternalHiveSplit;
 import io.trino.plugin.hive.InternalHiveSplit.InternalHiveBlock;
 import io.trino.plugin.hive.fs.BlockLocation;
@@ -211,11 +211,11 @@ public class InternalHiveSplitFactory
                 start,
                 blocks.get(0).getStart());
         checkArgument(
-                start + length == blocks.get(blocks.size() - 1).getEnd(),
+                start + length == blocks.getLast().getEnd(),
                 "Split (%s) end (%s) does not match last block end (%s)",
                 path,
                 start + length,
-                blocks.get(blocks.size() - 1).getEnd());
+                blocks.getLast().getEnd());
         for (int i = 1; i < blocks.size(); i++) {
             checkArgument(
                     blocks.get(i - 1).getEnd() == blocks.get(i).getStart(),

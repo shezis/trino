@@ -21,11 +21,18 @@ import io.trino.Session;
 import io.trino.connector.MockConnectorColumnHandle;
 import io.trino.connector.MockConnectorFactory;
 import io.trino.connector.MockConnectorTableHandle;
+import io.trino.metadata.ResolvedFunction;
+import io.trino.metadata.TestingFunctionResolution;
 import io.trino.plugin.tpch.TpchConnectorFactory;
 import io.trino.spi.connector.ColumnMetadata;
 import io.trino.spi.connector.SchemaTableName;
+import io.trino.spi.function.OperatorType;
 import io.trino.spi.predicate.TupleDomain;
 import io.trino.spi.type.BigintType;
+import io.trino.sql.ir.Call;
+import io.trino.sql.ir.Comparison;
+import io.trino.sql.ir.Constant;
+import io.trino.sql.ir.Reference;
 import io.trino.sql.planner.OptimizerConfig.JoinDistributionType;
 import io.trino.sql.planner.OptimizerConfig.JoinReorderingStrategy;
 import io.trino.sql.planner.assertions.BasePlanTest;
@@ -37,26 +44,30 @@ import io.trino.sql.planner.plan.JoinNode.DistributionType;
 import io.trino.sql.planner.plan.MarkDistinctNode;
 import io.trino.sql.planner.plan.TableScanNode;
 import io.trino.sql.planner.plan.ValuesNode;
-import io.trino.sql.tree.GenericLiteral;
-import io.trino.sql.tree.LongLiteral;
 import io.trino.testing.PlanTester;
 import org.junit.jupiter.api.Test;
 
 import java.util.Optional;
 
 import static io.trino.SystemSessionProperties.COLOCATED_JOIN;
+import static io.trino.SystemSessionProperties.DISTINCT_AGGREGATIONS_STRATEGY;
 import static io.trino.SystemSessionProperties.ENABLE_DYNAMIC_FILTERING;
 import static io.trino.SystemSessionProperties.ENABLE_STATS_CALCULATOR;
 import static io.trino.SystemSessionProperties.IGNORE_DOWNSTREAM_PREFERENCES;
 import static io.trino.SystemSessionProperties.JOIN_DISTRIBUTION_TYPE;
 import static io.trino.SystemSessionProperties.JOIN_PARTITIONED_BUILD_MIN_ROW_COUNT;
 import static io.trino.SystemSessionProperties.JOIN_REORDERING_STRATEGY;
-import static io.trino.SystemSessionProperties.MARK_DISTINCT_STRATEGY;
+import static io.trino.SystemSessionProperties.PUSH_FILTER_INTO_VALUES_MAX_ROW_COUNT;
 import static io.trino.SystemSessionProperties.SPILL_ENABLED;
 import static io.trino.SystemSessionProperties.TASK_CONCURRENCY;
 import static io.trino.SystemSessionProperties.USE_COST_BASED_PARTITIONING;
 import static io.trino.SystemSessionProperties.USE_EXACT_PARTITIONING;
 import static io.trino.SystemSessionProperties.isColocatedJoinEnabled;
+import static io.trino.spi.type.BigintType.BIGINT;
+import static io.trino.spi.type.IntegerType.INTEGER;
+import static io.trino.spi.type.VarcharType.VARCHAR;
+import static io.trino.sql.ir.Comparison.Operator.GREATER_THAN;
+import static io.trino.sql.ir.Comparison.Operator.LESS_THAN;
 import static io.trino.sql.planner.OptimizerConfig.JoinDistributionType.PARTITIONED;
 import static io.trino.sql.planner.OptimizerConfig.JoinReorderingStrategy.ELIMINATE_CROSS_JOINS;
 import static io.trino.sql.planner.SystemPartitioningHandle.FIXED_ARBITRARY_DISTRIBUTION;
@@ -66,7 +77,6 @@ import static io.trino.sql.planner.SystemPartitioningHandle.SINGLE_DISTRIBUTION;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.aggregation;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.aggregationFunction;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.any;
-import static io.trino.sql.planner.assertions.PlanMatchPattern.anySymbol;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.anyTree;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.exchange;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.expression;
@@ -101,6 +111,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 public class TestAddExchangesPlans
         extends BasePlanTest
 {
+    private static final TestingFunctionResolution FUNCTIONS = new TestingFunctionResolution();
+    private static final ResolvedFunction MODULUS_BIGINT = FUNCTIONS.resolveOperator(OperatorType.MODULUS, ImmutableList.of(BIGINT, BIGINT));
+
     @Override
     protected PlanTester createPlanTester()
     {
@@ -139,7 +152,7 @@ public class TestAddExchangesPlans
                                         anyTree(
                                                 exchange(REMOTE, REPARTITION,
                                                         anyTree(
-                                                                values(ImmutableList.of("expr"), ImmutableList.of(ImmutableList.of(new GenericLiteral("BIGINT", "1")))))))))));
+                                                                values(ImmutableList.of("expr"), ImmutableList.of(ImmutableList.of(new Constant(BIGINT, 1L)))))))))));
     }
 
     @Test
@@ -179,7 +192,7 @@ public class TestAddExchangesPlans
                                                         anyTree(
                                                                 tableScan("nation", ImmutableMap.of("nationkey", "nationkey")))),
                                                 exchange(REMOTE, REPARTITION,
-                                                        values(ImmutableList.of("expr"), ImmutableList.of(ImmutableList.of(new GenericLiteral("BIGINT", "1")))))))
+                                                        values(ImmutableList.of("expr"), ImmutableList.of(ImmutableList.of(new Constant(BIGINT, 1L)))))))
                                 .right(
                                         anyTree(
                                                 exchange(REMOTE, REPARTITION,
@@ -255,37 +268,37 @@ public class TestAddExchangesPlans
                 query,
                 Session.builder(getPlanTester().getDefaultSession())
                         .setSystemProperty(IGNORE_DOWNSTREAM_PREFERENCES, "true")
-                        .setSystemProperty(MARK_DISTINCT_STRATEGY, "always")
+                        .setSystemProperty(DISTINCT_AGGREGATIONS_STRATEGY, "mark_distinct")
                         .build(),
                 anyTree(
                         node(MarkDistinctNode.class,
                                 anyTree(
                                         exchange(REMOTE, REPARTITION, ImmutableList.of(), ImmutableSet.of("partition1", "partition2"),
                                                 values(
-                                                        ImmutableList.of("field", "partition2", "partition1"),
-                                                        ImmutableList.of(ImmutableList.of(new LongLiteral("1"), new LongLiteral("2"), new LongLiteral("1"))))),
-                                        exchange(REMOTE, REPARTITION, ImmutableList.of(), ImmutableSet.of("partition3"),
+                                                        ImmutableList.of("partition1", "partition2", "field"),
+                                                        ImmutableList.of(ImmutableList.of(new Constant(INTEGER, 1L), new Constant(INTEGER, 2L), new Constant(INTEGER, 1L))))),
+                                        exchange(REMOTE, REPARTITION, ImmutableList.of(), ImmutableSet.of("partition3", "partition4"),
                                                 values(
                                                         ImmutableList.of("partition3", "partition4", "field_0"),
-                                                        ImmutableList.of(ImmutableList.of(new LongLiteral("3"), new LongLiteral("4"), new LongLiteral("1")))))))));
+                                                        ImmutableList.of(ImmutableList.of(new Constant(INTEGER, 3L), new Constant(INTEGER, 4L), new Constant(INTEGER, 1L)))))))));
 
         assertDistributedPlan(
                 query,
                 Session.builder(getPlanTester().getDefaultSession())
                         .setSystemProperty(IGNORE_DOWNSTREAM_PREFERENCES, "false")
-                        .setSystemProperty(MARK_DISTINCT_STRATEGY, "always")
+                        .setSystemProperty(DISTINCT_AGGREGATIONS_STRATEGY, "mark_distinct")
                         .build(),
                 anyTree(
                         node(MarkDistinctNode.class,
                                 anyTree(
                                         exchange(REMOTE, REPARTITION, ImmutableList.of(), ImmutableSet.of("partition1"),
                                                 values(
-                                                        ImmutableList.of("field", "partition2", "partition1"),
-                                                        ImmutableList.of(ImmutableList.of(new LongLiteral("1"), new LongLiteral("2"), new LongLiteral("1"))))),
+                                                        ImmutableList.of("partition1", "partition2", "field"),
+                                                        ImmutableList.of(ImmutableList.of(new Constant(INTEGER, 1L), new Constant(INTEGER, 2L), new Constant(INTEGER, 1L))))),
                                         exchange(REMOTE, REPARTITION, ImmutableList.of(), ImmutableSet.of("partition3"),
                                                 values(
                                                         ImmutableList.of("partition3", "partition4", "field_0"),
-                                                        ImmutableList.of(ImmutableList.of(new LongLiteral("3"), new LongLiteral("4"), new LongLiteral("1")))))))));
+                                                        ImmutableList.of(ImmutableList.of(new Constant(INTEGER, 3L), new Constant(INTEGER, 4L), new Constant(INTEGER, 1L)))))))));
     }
 
     @Test
@@ -297,14 +310,14 @@ public class TestAddExchangesPlans
                 "SELECT name FROM nation ORDER BY regionkey, name OFFSET 5 LIMIT 2",
                 output(
                         project(
-                                ImmutableMap.of("name", PlanMatchPattern.expression("name")),
+                                ImmutableMap.of("name", expression(new Reference(VARCHAR, "name"))),
                                 filter(
-                                        "row_num > BIGINT '5'",
+                                        new Comparison(GREATER_THAN, new Reference(BIGINT, "row_num"), new Constant(BIGINT, 5L)),
                                         rowNumber(
                                                 pattern -> pattern
                                                         .partitionBy(ImmutableList.of()),
                                                 project(
-                                                        ImmutableMap.of("name", PlanMatchPattern.expression("name")),
+                                                        ImmutableMap.of("name", expression(new Reference(VARCHAR, "name"))),
                                                         topN(
                                                                 7,
                                                                 ImmutableList.of(sort("regionkey", ASCENDING, LAST), sort("name", ASCENDING, LAST)),
@@ -322,9 +335,9 @@ public class TestAddExchangesPlans
                 "SELECT name FROM nation OFFSET 5 LIMIT 2",
                 any(
                         project(
-                                ImmutableMap.of("name", PlanMatchPattern.expression("name")),
+                                ImmutableMap.of("name", expression(new Reference(VARCHAR, "name"))),
                                 filter(
-                                        "row_num > BIGINT '5'",
+                                        new Comparison(GREATER_THAN, new Reference(BIGINT, "row_num"), new Constant(BIGINT, 5L)),
                                         exchange(
                                                 LOCAL,
                                                 REPARTITION,
@@ -351,7 +364,7 @@ public class TestAddExchangesPlans
                                 pattern -> pattern
                                         .partitionBy(ImmutableList.of()),
                                 project(
-                                        ImmutableMap.of("name", expression("name")),
+                                        ImmutableMap.of("name", expression(new Reference(VARCHAR, "name"))),
                                         topN(
                                                 5,
                                                 ImmutableList.of(sort("nationkey", ASCENDING, LAST)),
@@ -364,6 +377,7 @@ public class TestAddExchangesPlans
         // ==> Projection is planned with multiple distribution and gathering exchange is added on top of Projection.
         assertPlan(
                 "SELECT b, row_number() OVER () FROM (VALUES (1, 2)) t(a, b) WHERE a < 10",
+                disablePushFilterIntoValues(),
                 any(
                         rowNumber(
                                 pattern -> pattern
@@ -372,9 +386,9 @@ public class TestAddExchangesPlans
                                         LOCAL,
                                         GATHER,
                                         project(
-                                                ImmutableMap.of("b", expression("b")),
+                                                ImmutableMap.of("b", expression(new Reference(INTEGER, "b"))),
                                                 filter(
-                                                        "a < 10",
+                                                        new Comparison(LESS_THAN, new Reference(INTEGER, "a"), new Constant(INTEGER, 10L)),
                                                         exchange(
                                                                 LOCAL,
                                                                 REPARTITION,
@@ -395,7 +409,7 @@ public class TestAddExchangesPlans
                                         ImmutableList.of(),
                                         ImmutableSet.of("regionkey"),
                                         project(
-                                                ImmutableMap.of("regionkey", expression("regionkey")),
+                                                ImmutableMap.of("regionkey", expression(new Reference(BIGINT,"regionkey"))),
                                                 topN(
                                                         5,
                                                         ImmutableList.of(sort("nationkey", ASCENDING, LAST)),
@@ -408,6 +422,7 @@ public class TestAddExchangesPlans
         // ==> Projection is planned with multiple distribution (no exchange added below). Hash partitioning exchange is added on top of Projection.
         assertPlan(
                 "SELECT row_number() OVER (PARTITION BY b) FROM (VALUES (1, 2)) t(a,b) WHERE a < 10",
+                disablePushFilterIntoValues(),
                 anyTree(
                         rowNumber(
                                 pattern -> pattern
@@ -418,9 +433,9 @@ public class TestAddExchangesPlans
                                         ImmutableList.of(),
                                         ImmutableSet.of("b"),
                                         project(
-                                                ImmutableMap.of("b", expression("b")),
+                                                ImmutableMap.of("b", expression(new Reference(INTEGER, "b"))),
                                                 filter(
-                                                        "a < 10",
+                                                        new Comparison(LESS_THAN, new Reference(INTEGER, "a"), new Constant(INTEGER, 10L)),
                                                         exchange(
                                                                 LOCAL,
                                                                 REPARTITION,
@@ -436,7 +451,7 @@ public class TestAddExchangesPlans
                                 ImmutableMap.of("count", aggregationFunction("count", ImmutableList.of("name"))),
                                 PARTIAL,
                                 project(
-                                        ImmutableMap.of("name", expression("name")),
+                                        ImmutableMap.of("name", expression(new Reference(VARCHAR, "name"))),
                                         exchange(
                                                 LOCAL,
                                                 REPARTITION,
@@ -452,14 +467,15 @@ public class TestAddExchangesPlans
         // ==> Projection is planned with multiple distribution (no exchange added)
         assertPlan(
                 "SELECT count(b) FROM (VALUES (1, 2)) t(a,b) WHERE a < 10",
+                disablePushFilterIntoValues(),
                 anyTree(
                         aggregation(
                                 ImmutableMap.of("count", aggregationFunction("count", ImmutableList.of("b"))),
                                 PARTIAL,
                                 project(
-                                        ImmutableMap.of("b", expression("b")),
+                                        ImmutableMap.of("b", expression(new Reference(INTEGER, "b"))),
                                         filter(
-                                                "a < 10",
+                                                new Comparison(LESS_THAN, new Reference(INTEGER, "a"), new Constant(INTEGER, 10L)),
                                                 exchange(
                                                         LOCAL,
                                                         REPARTITION,
@@ -468,7 +484,7 @@ public class TestAddExchangesPlans
         assertPlan(
                 "SELECT 10, a FROM (VALUES 1) t(a)",
                 anyTree(
-                        values(ImmutableList.of("a", "expr"), ImmutableList.of(ImmutableList.of(new LongLiteral("1"), new LongLiteral("10"))))));
+                        values(ImmutableList.of("a", "expr"), ImmutableList.of(ImmutableList.of(new Constant(INTEGER, 1L), new Constant(INTEGER, 10L))))));
 
         assertPlan(
                 "SELECT 1 UNION ALL SELECT 1",
@@ -476,8 +492,8 @@ public class TestAddExchangesPlans
                         exchange(
                                 LOCAL,
                                 REPARTITION,
-                                values(ImmutableList.of("expr"), ImmutableList.of(ImmutableList.of(new LongLiteral("1")))),
-                                values(ImmutableList.of("expr_0"), ImmutableList.of(ImmutableList.of(new LongLiteral("1")))))));
+                                values(ImmutableList.of("expr"), ImmutableList.of(ImmutableList.of(new Constant(INTEGER, 1L)))),
+                                values(ImmutableList.of("expr_0"), ImmutableList.of(ImmutableList.of(new Constant(INTEGER, 1L)))))));
     }
 
     @Test
@@ -692,7 +708,7 @@ public class TestAddExchangesPlans
                                                                                 Optional.empty(),
                                                                                 PARTIAL,
                                                                                 project(
-                                                                                        ImmutableMap.of("partkey_expr", expression("partkey % BIGINT '10'")),
+                                                                                        ImmutableMap.of("partkey_expr", expression(new Call(MODULUS_BIGINT, ImmutableList.of(new Reference(BIGINT, "partkey"), new Constant(BIGINT, 10L))))),
                                                                                         tableScan("lineitem", ImmutableMap.of(
                                                                                                 "partkey", "partkey",
                                                                                                 "suppkey", "suppkey"))))))))))))));
@@ -722,7 +738,7 @@ public class TestAddExchangesPlans
                                                         Optional.empty(),
                                                         Step.PARTIAL,
                                                         project(
-                                                                ImmutableMap.of("orderkey_expr", expression("orderkey % BIGINT '10000'")),
+                                                                ImmutableMap.of("orderkey_expr", expression(new Call(MODULUS_BIGINT, ImmutableList.of(new Reference(BIGINT, "orderkey"), new Constant(BIGINT, 10000L))))),
                                                                 tableScan("lineitem", ImmutableMap.of(
                                                                         "partkey", "partkey",
                                                                         "orderkey", "orderkey",
@@ -846,7 +862,7 @@ public class TestAddExchangesPlans
                                 anyTree(
                                         aggregation(
                                                 singleGroupingSet("orderkey"),
-                                                ImmutableMap.of(Optional.of("any_value"), PlanMatchPattern.aggregationFunction("any_value", false, ImmutableList.of(anySymbol()))),
+                                                ImmutableMap.of(Optional.of("any_value"), PlanMatchPattern.aggregationFunction("any_value", ImmutableList.of("orderstatus"))),
                                                 ImmutableList.of("orderkey"),
                                                 ImmutableList.of(),
                                                 Optional.empty(),
@@ -876,7 +892,7 @@ public class TestAddExchangesPlans
                         "    GROUP BY\n" +
                         "        orderkey,\n" +
                         "        orderstatus\n",
-                useExactPartitioning(),
+                useExactPartitioningWithMarkDistinct(),
                 anyTree(
                         exchange(REMOTE, REPARTITION,
                                 anyTree(
@@ -1219,6 +1235,17 @@ public class TestAddExchangesPlans
                 .build();
     }
 
+    private Session useExactPartitioningWithMarkDistinct()
+    {
+        return Session.builder(getPlanTester().getDefaultSession())
+                .setSystemProperty(JOIN_REORDERING_STRATEGY, ELIMINATE_CROSS_JOINS.name())
+                .setSystemProperty(JOIN_DISTRIBUTION_TYPE, PARTITIONED.name())
+                .setSystemProperty(ENABLE_DYNAMIC_FILTERING, "false")
+                .setSystemProperty(USE_EXACT_PARTITIONING, "true")
+                .setSystemProperty(DISTINCT_AGGREGATIONS_STRATEGY, "mark_distinct")
+                .build();
+    }
+
     private Session doNotUseCostBasedPartitioning()
     {
         return Session.builder(getPlanTester().getDefaultSession())
@@ -1230,6 +1257,13 @@ public class TestAddExchangesPlans
     {
         return Session.builder(getPlanTester().getDefaultSession())
                 .setSystemProperty(ENABLE_STATS_CALCULATOR, "false")
+                .build();
+    }
+
+    private Session disablePushFilterIntoValues()
+    {
+        return Session.builder(getPlanTester().getDefaultSession())
+                .setSystemProperty(PUSH_FILTER_INTO_VALUES_MAX_ROW_COUNT, "0")
                 .build();
     }
 }

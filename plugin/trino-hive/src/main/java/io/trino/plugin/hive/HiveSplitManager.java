@@ -25,11 +25,15 @@ import io.airlift.stats.CounterStat;
 import io.airlift.units.DataSize;
 import io.trino.filesystem.TrinoFileSystemFactory;
 import io.trino.filesystem.cache.CachingHostAddressProvider;
-import io.trino.plugin.hive.metastore.Column;
-import io.trino.plugin.hive.metastore.Partition;
+import io.trino.metastore.Column;
+import io.trino.metastore.HiveBucketProperty;
+import io.trino.metastore.HivePartition;
+import io.trino.metastore.HiveType;
+import io.trino.metastore.HiveTypeName;
+import io.trino.metastore.Partition;
+import io.trino.metastore.SortingColumn;
+import io.trino.metastore.Table;
 import io.trino.plugin.hive.metastore.SemiTransactionalHiveMetastore;
-import io.trino.plugin.hive.metastore.SortingColumn;
-import io.trino.plugin.hive.metastore.Table;
 import io.trino.plugin.hive.util.HiveBucketing.HiveBucketFilter;
 import io.trino.plugin.hive.util.HiveUtil;
 import io.trino.spi.TrinoException;
@@ -69,11 +73,11 @@ import static com.google.common.collect.Iterators.peekingIterator;
 import static com.google.common.collect.Iterators.singletonIterator;
 import static com.google.common.collect.Iterators.transform;
 import static com.google.common.collect.Streams.stream;
+import static io.trino.metastore.HivePartition.UNPARTITIONED_ID;
 import static io.trino.plugin.hive.BackgroundHiveSplitLoader.BucketSplitInfo.createBucketSplitInfo;
 import static io.trino.plugin.hive.HiveErrorCode.HIVE_INVALID_METADATA;
 import static io.trino.plugin.hive.HiveErrorCode.HIVE_PARTITION_DROPPED_DURING_QUERY;
 import static io.trino.plugin.hive.HiveErrorCode.HIVE_PARTITION_SCHEMA_MISMATCH;
-import static io.trino.plugin.hive.HivePartition.UNPARTITIONED_ID;
 import static io.trino.plugin.hive.HiveSessionProperties.getDynamicFilteringWaitTimeout;
 import static io.trino.plugin.hive.HiveSessionProperties.getTimestampPrecision;
 import static io.trino.plugin.hive.HiveSessionProperties.isIgnoreAbsentPartitions;
@@ -221,10 +225,10 @@ public class HiveSplitManager
         Optional<HiveBucketHandle> bucketHandle = hiveTable.getBucketHandle();
 
         bucketHandle.ifPresent(bucketing ->
-                verify(bucketing.getReadBucketCount() <= bucketing.getTableBucketCount(),
+                verify(bucketing.readBucketCount() <= bucketing.tableBucketCount(),
                         "readBucketCount (%s) is greater than the tableBucketCount (%s) which generally points to an issue in plan generation",
-                        bucketing.getReadBucketCount(),
-                        bucketing.getTableBucketCount()));
+                        bucketing.readBucketCount(),
+                        bucketing.tableBucketCount()));
 
         // get partitions
         Iterator<HivePartition> partitions = partitionManager.getPartitions(metastore, hiveTable);
@@ -399,10 +403,10 @@ public class HiveSplitManager
                             "Hive table (%s) is bucketed but partition (%s) is not bucketed",
                             tableName,
                             partName)));
-            int tableBucketCount = bucketProperty.get().getBucketCount();
-            int partitionBucketCount = partitionBucketProperty.getBucketCount();
-            List<String> tableBucketColumns = bucketProperty.get().getBucketedBy();
-            List<String> partitionBucketColumns = partitionBucketProperty.getBucketedBy();
+            int tableBucketCount = bucketProperty.get().bucketCount();
+            int partitionBucketCount = partitionBucketProperty.bucketCount();
+            List<String> tableBucketColumns = bucketProperty.get().bucketedBy();
+            List<String> partitionBucketColumns = partitionBucketProperty.bucketedBy();
             if (!tableBucketColumns.equals(partitionBucketColumns) || !isBucketCountCompatible(tableBucketCount, partitionBucketCount)) {
                 throw new TrinoException(HIVE_PARTITION_SCHEMA_MISMATCH, format(
                         "Hive table (%s) bucketing (columns=%s, buckets=%s) is not compatible with partition (%s) bucketing (columns=%s, buckets=%s)",
@@ -414,8 +418,8 @@ public class HiveSplitManager
                         partitionBucketCount));
             }
             if (propagateTableScanSortingProperties) {
-                List<SortingColumn> tableSortedColumns = bucketProperty.get().getSortedBy();
-                List<SortingColumn> partitionSortedColumns = partitionBucketProperty.getSortedBy();
+                List<SortingColumn> tableSortedColumns = bucketProperty.get().sortedBy();
+                List<SortingColumn> partitionSortedColumns = partitionBucketProperty.sortedBy();
                 if (!isSortingCompatible(tableSortedColumns, partitionSortedColumns)) {
                     throw new TrinoException(HIVE_PARTITION_SCHEMA_MISMATCH, format(
                             "Hive table (%s) sorting by %s is not compatible with partition (%s) sorting by %s. This restriction can be avoided by disabling propagate_table_scan_sorting_properties.",

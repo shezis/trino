@@ -13,11 +13,11 @@
  */
 package io.trino.plugin.deltalake;
 
-import com.google.common.collect.ImmutableMap;
 import io.trino.Session;
+import io.trino.metastore.HiveMetastore;
 import io.trino.plugin.deltalake.metastore.TestingDeltaLakeMetastoreModule;
 import io.trino.plugin.hive.TestingHivePlugin;
-import io.trino.plugin.hive.metastore.HiveMetastore;
+import io.trino.plugin.hive.metastore.glue.GlueHiveMetastore;
 import io.trino.testing.AbstractTestQueryFramework;
 import io.trino.testing.DistributedQueryRunner;
 import io.trino.testing.QueryRunner;
@@ -69,11 +69,7 @@ public abstract class BaseDeltaLakeSharedMetastoreViewsTest
 
         queryRunner.installPlugin(new TestingHivePlugin(dataDirectory, metastore));
 
-        ImmutableMap<String, String> hiveProperties = ImmutableMap.<String, String>builder()
-                .put("hive.allow-drop-table", "true")
-                .buildOrThrow();
-
-        queryRunner.createCatalog(HIVE_CATALOG_NAME, "hive", hiveProperties);
+        queryRunner.createCatalog(HIVE_CATALOG_NAME, "hive");
         queryRunner.execute("CREATE SCHEMA " + SCHEMA);
 
         return queryRunner;
@@ -150,6 +146,9 @@ public abstract class BaseDeltaLakeSharedMetastoreViewsTest
             assertQuery(format("SELECT * FROM %s", trinoViewOnHive), "VALUES 1");
             assertQuery(format("SELECT * FROM %s", trinoViewOnHiveOnDeltaCatalog), "VALUES 1");
             assertQuery(format("SELECT table_type FROM %s.information_schema.tables WHERE table_name = '%s' AND table_schema='%s'", DELTA_CATALOG_NAME, trinoViewOnHiveName, SCHEMA), "VALUES 'VIEW'");
+            assertQuery(
+                    format("SELECT table_name FROM %s.information_schema.columns WHERE table_name = '%s' AND table_schema='%s'", DELTA_CATALOG_NAME, trinoViewOnHiveName, SCHEMA),
+                    "VALUES '" + trinoViewOnHiveName + "'");
         }
         finally {
             assertUpdate(format("DROP TABLE IF EXISTS %s", hiveTable));
@@ -180,6 +179,9 @@ public abstract class BaseDeltaLakeSharedMetastoreViewsTest
     {
         if (metastore != null) {
             metastore.dropDatabase(SCHEMA, false);
+            if (metastore instanceof GlueHiveMetastore glueMetastore) {
+                glueMetastore.shutdown();
+            }
             deleteRecursively(dataDirectory, ALLOW_INSECURE);
         }
     }

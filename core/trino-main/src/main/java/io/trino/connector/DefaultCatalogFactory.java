@@ -15,6 +15,7 @@ package io.trino.connector;
 
 import com.google.errorprone.annotations.ThreadSafe;
 import com.google.inject.Inject;
+import io.airlift.configuration.secrets.SecretsResolver;
 import io.airlift.node.NodeInfo;
 import io.opentelemetry.api.OpenTelemetry;
 import io.opentelemetry.api.trace.Tracer;
@@ -24,17 +25,20 @@ import io.trino.connector.system.StaticSystemTablesProvider;
 import io.trino.connector.system.SystemConnector;
 import io.trino.connector.system.SystemTablesProvider;
 import io.trino.execution.scheduler.NodeSchedulerConfig;
+import io.trino.memory.LocalMemoryManager;
 import io.trino.metadata.InternalNodeManager;
 import io.trino.metadata.Metadata;
 import io.trino.security.AccessControl;
 import io.trino.spi.PageIndexerFactory;
 import io.trino.spi.PageSorter;
 import io.trino.spi.VersionEmbedder;
+import io.trino.spi.catalog.CatalogProperties;
 import io.trino.spi.classloader.ThreadContextClassLoader;
 import io.trino.spi.connector.CatalogHandle;
 import io.trino.spi.connector.Connector;
 import io.trino.spi.connector.ConnectorContext;
 import io.trino.spi.connector.ConnectorFactory;
+import io.trino.spi.connector.ConnectorName;
 import io.trino.spi.type.TypeManager;
 import io.trino.sql.planner.OptimizerConfig;
 import io.trino.transaction.TransactionManager;
@@ -69,6 +73,8 @@ public class DefaultCatalogFactory
     private final int maxPrefetchedInformationSchemaPrefixes;
 
     private final ConcurrentMap<ConnectorName, ConnectorFactory> connectorFactories = new ConcurrentHashMap<>();
+    private final LocalMemoryManager localMemoryManager;
+    private final SecretsResolver secretsResolver;
 
     @Inject
     public DefaultCatalogFactory(
@@ -83,7 +89,9 @@ public class DefaultCatalogFactory
             TransactionManager transactionManager,
             TypeManager typeManager,
             NodeSchedulerConfig nodeSchedulerConfig,
-            OptimizerConfig optimizerConfig)
+            OptimizerConfig optimizerConfig,
+            LocalMemoryManager localMemoryManager,
+            SecretsResolver secretsResolver)
     {
         this.metadata = requireNonNull(metadata, "metadata is null");
         this.accessControl = requireNonNull(accessControl, "accessControl is null");
@@ -97,6 +105,8 @@ public class DefaultCatalogFactory
         this.typeManager = requireNonNull(typeManager, "typeManager is null");
         this.schedulerIncludeCoordinator = nodeSchedulerConfig.isIncludeCoordinator();
         this.maxPrefetchedInformationSchemaPrefixes = optimizerConfig.getMaxPrefetchedInformationSchemaPrefixes();
+        this.localMemoryManager = requireNonNull(localMemoryManager, "localMemoryManager is null");
+        this.secretsResolver = requireNonNull(secretsResolver, "secretsResolver is null");
     }
 
     @Override
@@ -112,18 +122,18 @@ public class DefaultCatalogFactory
     {
         requireNonNull(catalogProperties, "catalogProperties is null");
 
-        ConnectorFactory connectorFactory = connectorFactories.get(catalogProperties.getConnectorName());
-        checkArgument(connectorFactory != null, "No factory for connector '%s'. Available factories: %s", catalogProperties.getConnectorName(), connectorFactories.keySet());
+        ConnectorFactory connectorFactory = connectorFactories.get(catalogProperties.connectorName());
+        checkArgument(connectorFactory != null, "No factory for connector '%s'. Available factories: %s", catalogProperties.connectorName(), connectorFactories.keySet());
 
         Connector connector = createConnector(
-                catalogProperties.getCatalogHandle().getCatalogName(),
-                catalogProperties.getCatalogHandle(),
+                catalogProperties.catalogHandle().getCatalogName().toString(),
+                catalogProperties.catalogHandle(),
                 connectorFactory,
-                catalogProperties.getProperties());
+                secretsResolver.getResolvedConfiguration(catalogProperties.properties()));
 
         return createCatalog(
-                catalogProperties.getCatalogHandle(),
-                catalogProperties.getConnectorName(),
+                catalogProperties.catalogHandle(),
+                catalogProperties.connectorName(),
                 connector,
                 Optional.of(catalogProperties));
     }
@@ -144,7 +154,7 @@ public class DefaultCatalogFactory
                 tracer,
                 createInformationSchemaCatalogHandle(catalogHandle),
                 new InformationSchemaConnector(
-                        catalogHandle.getCatalogName(),
+                        catalogHandle.getCatalogName().toString(),
                         nodeManager,
                         metadata,
                         accessControl,
@@ -155,7 +165,7 @@ public class DefaultCatalogFactory
             systemTablesProvider = new CoordinatorSystemTablesProvider(
                     transactionManager,
                     metadata,
-                    catalogHandle.getCatalogName(),
+                    catalogHandle.getCatalogName().toString(),
                     new StaticSystemTablesProvider(catalogConnector.getSystemTables()));
         }
         else {
@@ -176,6 +186,7 @@ public class DefaultCatalogFactory
                 catalogConnector,
                 informationSchemaConnector,
                 systemConnector,
+                localMemoryManager,
                 catalogProperties);
     }
 
@@ -196,7 +207,7 @@ public class DefaultCatalogFactory
                 pageSorter,
                 pageIndexerFactory);
 
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(connectorFactory.getClass().getClassLoader())) {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(connectorFactory.getClass().getClassLoader())) {
             return connectorFactory.create(catalogName, properties, context);
         }
     }

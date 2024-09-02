@@ -27,22 +27,14 @@ public class DropRole
 {
     private final Identifier name;
     private final Optional<Identifier> catalog;
+    private final boolean exists;
 
-    public DropRole(Identifier name, Optional<Identifier> catalog)
+    public DropRole(NodeLocation location, Identifier name, Optional<Identifier> catalog, boolean exists)
     {
-        this(Optional.empty(), name, catalog);
-    }
-
-    public DropRole(NodeLocation location, Identifier name, Optional<Identifier> catalog)
-    {
-        this(Optional.of(location), name, catalog);
-    }
-
-    private DropRole(Optional<NodeLocation> location, Identifier name, Optional<Identifier> catalog)
-    {
-        super(location);
+        super(Optional.of(location));
         this.name = requireNonNull(name, "name is null");
         this.catalog = requireNonNull(catalog, "catalog is null");
+        this.exists = exists;
     }
 
     public Identifier getName()
@@ -53,6 +45,11 @@ public class DropRole
     public Optional<Identifier> getCatalog()
     {
         return catalog;
+    }
+
+    public boolean isExists()
+    {
+        return exists;
     }
 
     @Override

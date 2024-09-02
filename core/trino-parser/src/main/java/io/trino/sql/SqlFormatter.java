@@ -14,7 +14,6 @@
 package io.trino.sql;
 
 import com.google.common.base.Joiner;
-import com.google.common.base.Strings;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import io.trino.sql.tree.AddColumn;
 import io.trino.sql.tree.AliasedRelation;
@@ -335,7 +334,7 @@ public final class SqlFormatter
                 process(columns.get(i), indent + 1);
                 builder.append(",\n");
             }
-            process(columns.get(columns.size() - 1), indent + 1);
+            process(columns.getLast(), indent + 1);
             builder.append(")");
         }
 
@@ -445,7 +444,7 @@ public final class SqlFormatter
                         .append(" ");
             }
             builder.append("(");
-            process(node.getSiblings().get(node.getSiblings().size() - 1));
+            process(node.getSiblings().getLast());
             builder.append(")");
             return null;
         }
@@ -528,8 +527,7 @@ public final class SqlFormatter
             builder.append("TABLE(");
             process(unaliased, indent);
             builder.append(")");
-            if (relation instanceof AliasedRelation) {
-                AliasedRelation aliasedRelation = (AliasedRelation) relation;
+            if (relation instanceof AliasedRelation aliasedRelation) {
                 builder.append(" AS ")
                         .append(formatName(aliasedRelation.getAlias()));
                 appendAliasColumns(builder, aliasedRelation.getColumnNames());
@@ -852,14 +850,12 @@ public final class SqlFormatter
             process(node.getRight(), indent);
 
             if (node.getType() != Join.Type.CROSS && node.getType() != Join.Type.IMPLICIT) {
-                if (criteria instanceof JoinUsing) {
-                    JoinUsing using = (JoinUsing) criteria;
+                if (criteria instanceof JoinUsing using) {
                     builder.append(" USING (")
                             .append(Joiner.on(", ").join(using.getColumns()))
                             .append(")");
                 }
-                else if (criteria instanceof JoinOn) {
-                    JoinOn on = (JoinOn) criteria;
+                else if (criteria instanceof JoinOn on) {
                     builder.append(" ON ")
                             .append(formatExpression(on.getExpression()));
                 }
@@ -1164,6 +1160,8 @@ public final class SqlFormatter
                     .append(" SECURITY ")
                     .append(security.name()));
 
+            builder.append(formatPropertiesMultiLine(node.getProperties()));
+
             builder.append(" AS\n");
 
             process(node.getQuery(), indent);
@@ -1370,18 +1368,16 @@ public final class SqlFormatter
         @Override
         protected Void visitShowCreate(ShowCreate node, Integer indent)
         {
-            if (node.getType() == ShowCreate.Type.TABLE) {
-                builder.append("SHOW CREATE TABLE ")
-                        .append(formatName(node.getName()));
-            }
-            else if (node.getType() == ShowCreate.Type.VIEW) {
-                builder.append("SHOW CREATE VIEW ")
-                        .append(formatName(node.getName()));
-            }
-            else if (node.getType() == ShowCreate.Type.MATERIALIZED_VIEW) {
-                builder.append("SHOW CREATE MATERIALIZED VIEW ")
-                        .append(formatName(node.getName()));
-            }
+            builder.append("SHOW CREATE ")
+                    .append(switch (node.getType()) {
+                        case SCHEMA -> "SCHEMA";
+                        case TABLE -> "TABLE";
+                        case VIEW -> "VIEW";
+                        case MATERIALIZED_VIEW -> "MATERIALIZED VIEW";
+                        case FUNCTION -> "FUNCTION";
+                    })
+                    .append(" ")
+                    .append(formatName(node.getName()));
             return null;
         }
 
@@ -1597,12 +1593,10 @@ public final class SqlFormatter
             String elementIndent = indentString(indent + 1);
             String columnList = node.getElements().stream()
                     .map(element -> {
-                        if (element instanceof ColumnDefinition) {
-                            ColumnDefinition column = (ColumnDefinition) element;
+                        if (element instanceof ColumnDefinition column) {
                             return elementIndent + formatColumnDefinition(column);
                         }
-                        if (element instanceof LikeClause) {
-                            LikeClause likeClause = (LikeClause) element;
+                        if (element instanceof LikeClause likeClause) {
                             StringBuilder builder = new StringBuilder(elementIndent);
                             builder.append("LIKE ")
                                     .append(formatName(likeClause.getTableName()));
@@ -1629,31 +1623,18 @@ public final class SqlFormatter
             return null;
         }
 
-        private String formatPropertiesMultiLine(List<Property> properties)
+        private static String formatPropertiesMultiLine(List<Property> properties)
         {
             if (properties.isEmpty()) {
                 return "";
             }
 
-            String propertyList = properties.stream()
-                    .map(element -> INDENT +
-                            formatName(element.getName()) + " = " +
-                            (element.isSetToDefault() ? "DEFAULT" : formatExpression(element.getNonDefaultValue())))
-                    .collect(joining(",\n"));
-
-            return "\nWITH (\n" + propertyList + "\n)";
+            return properties.stream()
+                    .map(property -> INDENT + formatProperty(property))
+                    .collect(joining(",\n", "\nWITH (\n", "\n)"));
         }
 
-        private String formatPropertiesSingleLine(List<Property> properties)
-        {
-            if (properties.isEmpty()) {
-                return "";
-            }
-
-            return " WITH ( " + joinProperties(properties) + " )";
-        }
-
-        private String formatColumnDefinition(ColumnDefinition column)
+        private static String formatColumnDefinition(ColumnDefinition column)
         {
             StringBuilder builder = new StringBuilder()
                     .append(formatName(column.getName()))
@@ -1664,7 +1645,11 @@ public final class SqlFormatter
             column.getComment().ifPresent(comment -> builder
                     .append(" COMMENT ")
                     .append(formatStringLiteral(comment)));
-            builder.append(formatPropertiesSingleLine(column.getProperties()));
+            if (!column.getProperties().isEmpty()) {
+                builder.append(" WITH (")
+                        .append(joinProperties(column.getProperties()))
+                        .append(")");
+            }
             return builder.toString();
         }
 
@@ -1729,12 +1714,17 @@ public final class SqlFormatter
             return null;
         }
 
-        private String joinProperties(List<Property> properties)
+        private static String joinProperties(List<Property> properties)
         {
             return properties.stream()
-                    .map(element -> formatName(element.getName()) + " = " +
-                            (element.isSetToDefault() ? "DEFAULT" : formatExpression(element.getNonDefaultValue())))
+                    .map(Formatter::formatProperty)
                     .collect(joining(", "));
+        }
+
+        private static String formatProperty(Property property)
+        {
+            return formatName(property.getName()) + " = " +
+                    (property.isSetToDefault() ? "DEFAULT" : formatExpression(property.getNonDefaultValue()));
         }
 
         @Override
@@ -2595,7 +2585,7 @@ public final class SqlFormatter
 
         private static String indentString(int indent)
         {
-            return Strings.repeat(INDENT, indent);
+            return INDENT.repeat(indent);
         }
 
         private void formatDefinitionList(List<String> elements, int indent)
@@ -2611,7 +2601,7 @@ public final class SqlFormatter
                     append(indent, elements.get(i))
                             .append(",\n");
                 }
-                append(indent, elements.get(elements.size() - 1))
+                append(indent, elements.getLast())
                         .append("\n");
             }
         }

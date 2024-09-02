@@ -14,8 +14,8 @@
 package io.trino.plugin.hive.metastore.file;
 
 import com.google.errorprone.annotations.Immutable;
-import io.trino.plugin.hive.HiveBasicStatistics;
-import io.trino.plugin.hive.metastore.HiveColumnStatistics;
+import io.trino.metastore.HiveBasicStatistics;
+import io.trino.metastore.HiveColumnStatistics;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
@@ -56,11 +56,11 @@ public record ColumnStatistics(
         requireNonNull(distinctValuesCount, "distinctValuesCount is null");
 
         Set<String> presentStatistics = new LinkedHashSet<>();
-        integerStatistics.ifPresent(ignored -> presentStatistics.add("integerStatistics"));
-        doubleStatistics.ifPresent(ignored -> presentStatistics.add("doubleStatistics"));
-        decimalStatistics.ifPresent(ignored -> presentStatistics.add("decimalStatistics"));
-        dateStatistics.ifPresent(ignored -> presentStatistics.add("dateStatistics"));
-        booleanStatistics.ifPresent(ignored -> presentStatistics.add("booleanStatistics"));
+        integerStatistics.ifPresent(_ -> presentStatistics.add("integerStatistics"));
+        doubleStatistics.ifPresent(_ -> presentStatistics.add("doubleStatistics"));
+        decimalStatistics.ifPresent(_ -> presentStatistics.add("decimalStatistics"));
+        dateStatistics.ifPresent(_ -> presentStatistics.add("dateStatistics"));
+        booleanStatistics.ifPresent(_ -> presentStatistics.add("booleanStatistics"));
         checkArgument(presentStatistics.size() <= 1, "multiple type specific statistic objects are present: %s", presentStatistics);
     }
 
@@ -82,15 +82,18 @@ public record ColumnStatistics(
     public HiveColumnStatistics toHiveColumnStatistics(HiveBasicStatistics basicStatistics)
     {
         OptionalDouble averageColumnLength = this.averageColumnLength;
-        if (totalSizeInBytes.isPresent() && basicStatistics.getRowCount().orElse(0) > 0) {
-            averageColumnLength = OptionalDouble.of(totalSizeInBytes.getAsLong() / (double) basicStatistics.getRowCount().getAsLong());
+        if (totalSizeInBytes.isPresent() && basicStatistics.getRowCount().orElse(0) > 0 && nullsCount().isPresent()) {
+            long nonNullCount = basicStatistics.getRowCount().getAsLong() - nullsCount().orElseThrow();
+            if (nonNullCount > 0) {
+                averageColumnLength = OptionalDouble.of(totalSizeInBytes.getAsLong() / (double) nonNullCount);
+            }
         }
         return new HiveColumnStatistics(
-                integerStatistics.map(stat -> new io.trino.plugin.hive.metastore.IntegerStatistics(stat.min(), stat.max())),
-                doubleStatistics.map(stat -> new io.trino.plugin.hive.metastore.DoubleStatistics(stat.min(), stat.max())),
-                decimalStatistics.map(stat -> new io.trino.plugin.hive.metastore.DecimalStatistics(stat.min(), stat.max())),
-                dateStatistics.map(stat -> new io.trino.plugin.hive.metastore.DateStatistics(stat.min(), stat.max())),
-                booleanStatistics.map(stat -> new io.trino.plugin.hive.metastore.BooleanStatistics(stat.trueCount(), stat.falseCount())),
+                integerStatistics.map(stat -> new io.trino.metastore.IntegerStatistics(stat.min(), stat.max())),
+                doubleStatistics.map(stat -> new io.trino.metastore.DoubleStatistics(stat.min(), stat.max())),
+                decimalStatistics.map(stat -> new io.trino.metastore.DecimalStatistics(stat.min(), stat.max())),
+                dateStatistics.map(stat -> new io.trino.metastore.DateStatistics(stat.min(), stat.max())),
+                booleanStatistics.map(stat -> new io.trino.metastore.BooleanStatistics(stat.trueCount(), stat.falseCount())),
                 maxValueSizeInBytes,
                 averageColumnLength,
                 nullsCount,

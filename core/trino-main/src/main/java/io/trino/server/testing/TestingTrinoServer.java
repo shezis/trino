@@ -23,6 +23,7 @@ import com.google.inject.Injector;
 import com.google.inject.Key;
 import com.google.inject.Module;
 import com.google.inject.Scopes;
+import com.google.inject.TypeLiteral;
 import io.airlift.bootstrap.Bootstrap;
 import io.airlift.bootstrap.LifeCycleManager;
 import io.airlift.discovery.client.Announcer;
@@ -45,8 +46,9 @@ import io.opentelemetry.api.trace.Span;
 import io.opentelemetry.sdk.trace.SpanProcessor;
 import io.trino.Session;
 import io.trino.SystemSessionPropertiesProvider;
+import io.trino.connector.CatalogManagerConfig.CatalogMangerKind;
 import io.trino.connector.CatalogManagerModule;
-import io.trino.connector.ConnectorName;
+import io.trino.connector.CatalogStoreManager;
 import io.trino.connector.ConnectorServicesProvider;
 import io.trino.cost.StatsCalculator;
 import io.trino.dispatcher.DispatchManager;
@@ -84,13 +86,16 @@ import io.trino.server.SessionContext;
 import io.trino.server.SessionPropertyDefaults;
 import io.trino.server.SessionSupplier;
 import io.trino.server.ShutdownAction;
+import io.trino.server.StartupStatus;
 import io.trino.server.security.CertificateAuthenticatorManager;
 import io.trino.server.security.ServerSecurityModule;
 import io.trino.spi.ErrorType;
 import io.trino.spi.Plugin;
 import io.trino.spi.QueryId;
+import io.trino.spi.catalog.CatalogName;
 import io.trino.spi.connector.CatalogHandle;
 import io.trino.spi.connector.Connector;
+import io.trino.spi.connector.ConnectorName;
 import io.trino.spi.eventlistener.EventListener;
 import io.trino.spi.security.GroupProvider;
 import io.trino.spi.security.SystemAccessControl;
@@ -125,10 +130,13 @@ import java.nio.file.Path;
 import java.time.Instant;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.CountDownLatch;
+import java.util.function.Consumer;
 
+import static com.google.common.base.MoreObjects.firstNonNull;
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.io.MoreFiles.deleteRecursively;
@@ -150,6 +158,11 @@ public class TestingTrinoServer
     static {
         Logging logging = Logging.initialize();
         logging.setLevel("io.trino.event.QueryMonitor", Level.ERROR);
+        logging.setLevel("org.eclipse.jetty", Level.ERROR);
+
+        // Trino server behavior does not depend on locale settings.
+        // Use en_US as this is what Trino is tested with.
+        Locale.setDefault(Locale.US);
     }
 
     public static final String SESSION_START_TIME_PROPERTY = "session_start_time";
@@ -238,7 +251,9 @@ public class TestingTrinoServer
             Optional<SpanProcessor> spanProcessor,
             Optional<FactoryConfiguration> systemAccessControlConfiguration,
             Optional<List<SystemAccessControl>> systemAccessControls,
-            List<EventListener> eventListeners)
+            List<EventListener> eventListeners,
+            Consumer<TestingTrinoServer> additionalConfiguration,
+            CatalogMangerKind catalogMangerKind)
     {
         this.coordinator = coordinator;
 
@@ -246,15 +261,12 @@ public class TestingTrinoServer
         this.preserveData = baseDataDir.isPresent();
 
         properties = new HashMap<>(properties);
-        String coordinatorPort = properties.remove("http-server.http.port");
-        if (coordinatorPort == null) {
-            coordinatorPort = "0";
-        }
+        int httpPort = parseInt(firstNonNull(properties.remove("http-server.http.port"), "0"));
 
         ImmutableMap.Builder<String, String> serverProperties = ImmutableMap.<String, String>builder()
                 .putAll(properties)
                 .put("coordinator", String.valueOf(coordinator))
-                .put("catalog.management", "dynamic")
+                .put("catalog.management", catalogMangerKind.name())
                 .put("task.concurrency", "4")
                 .put("task.max-worker-threads", "4")
                 // Use task.min-writer-count > 1, as this allows to expose writer-concurrency related bugs.
@@ -265,7 +277,12 @@ public class TestingTrinoServer
                 .put("internal-communication.shared-secret", "internal-shared-secret");
 
         if (coordinator) {
-            serverProperties.put("catalog.store", "memory");
+            if (catalogMangerKind == CatalogMangerKind.DYNAMIC) {
+                Optional<String> catalogStore = Optional.ofNullable(properties.get("catalog.store"));
+                if (catalogStore.isEmpty()) {
+                    serverProperties.put("catalog.store", "memory");
+                }
+            }
             serverProperties.put("failure-detector.enabled", "false");
 
             // Reduce memory footprint in tests
@@ -276,7 +293,7 @@ public class TestingTrinoServer
 
         ImmutableList.Builder<Module> modules = ImmutableList.<Module>builder()
                 .add(new TestingNodeModule(environment))
-                .add(new TestingHttpServerModule(parseInt(coordinator ? coordinatorPort : "0")))
+                .add(new TestingHttpServerModule(httpPort))
                 .add(new JsonModule())
                 .add(new JaxrsModule())
                 .add(new MBeanModule())
@@ -359,6 +376,9 @@ public class TestingTrinoServer
 
         pluginInstaller = injector.getInstance(PluginInstaller.class);
 
+        var catalogStoreManager = injector.getInstance(Key.get(new TypeLiteral<Optional<CatalogStoreManager>>() {}));
+        catalogStoreManager.ifPresent(CatalogStoreManager::loadConfiguredCatalogStore);
+
         Optional<CatalogManager> catalogManager = Optional.empty();
         if (injector.getExistingBinding(Key.get(CatalogManager.class)) != null) {
             catalogManager = Optional.of(injector.getInstance(CatalogManager.class));
@@ -419,6 +439,10 @@ public class TestingTrinoServer
         eventListeners.forEach(eventListenerManager::addEventListener);
 
         getFutureValue(injector.getInstance(Announcer.class).forceAnnounce());
+        // Must be run before startup is considered complete and node will therefore accept tasks.
+        // Technically `this` reference might escape here. However, the object is fully constructed.
+        additionalConfiguration.accept(this);
+        injector.getInstance(StartupStatus.class).startupComplete();
 
         refreshNodes();
     }
@@ -483,7 +507,7 @@ public class TestingTrinoServer
             // this is a worker so catalogs are dynamically registered
             return;
         }
-        catalogManager.get().createCatalog(catalogName, new ConnectorName(connectorName), properties, false);
+        catalogManager.get().createCatalog(new CatalogName(catalogName), new ConnectorName(connectorName), properties, false);
     }
 
     public void loadExchangeManager(String name, Map<String, String> properties)
@@ -646,7 +670,7 @@ public class TestingTrinoServer
     public Connector getConnector(String catalogName)
     {
         checkState(coordinator, "not a coordinator");
-        CatalogHandle catalogHandle = catalogManager.orElseThrow().getCatalog(catalogName)
+        CatalogHandle catalogHandle = catalogManager.orElseThrow().getCatalog(new CatalogName(catalogName))
                 .orElseThrow(() -> new IllegalArgumentException("Catalog '%s' not found".formatted(catalogName)))
                 .getCatalogHandle();
         return injector.getInstance(ConnectorServicesProvider.class)
@@ -710,6 +734,8 @@ public class TestingTrinoServer
         private Optional<FactoryConfiguration> systemAccessControlConfiguration = Optional.empty();
         private Optional<List<SystemAccessControl>> systemAccessControls = Optional.of(ImmutableList.of());
         private List<EventListener> eventListeners = ImmutableList.of();
+        private Consumer<TestingTrinoServer> additionalConfiguration = _ -> {};
+        private CatalogMangerKind catalogMangerKind = CatalogMangerKind.DYNAMIC;
 
         public Builder setCoordinator(boolean coordinator)
         {
@@ -785,6 +811,18 @@ public class TestingTrinoServer
             return this;
         }
 
+        public Builder setAdditionalConfiguration(Consumer<TestingTrinoServer> additionalConfiguration)
+        {
+            this.additionalConfiguration = additionalConfiguration;
+            return this;
+        }
+
+        public Builder setCatalogMangerKind(CatalogMangerKind catalogMangerKind)
+        {
+            this.catalogMangerKind = requireNonNull(catalogMangerKind, "catalogMangerKind is null");
+            return this;
+        }
+
         public TestingTrinoServer build()
         {
             return new TestingTrinoServer(
@@ -797,7 +835,9 @@ public class TestingTrinoServer
                     spanProcessor,
                     systemAccessControlConfiguration,
                     systemAccessControls,
-                    eventListeners);
+                    eventListeners,
+                    additionalConfiguration,
+                    catalogMangerKind);
         }
     }
 

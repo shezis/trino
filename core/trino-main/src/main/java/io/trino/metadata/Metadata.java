@@ -16,6 +16,7 @@ package io.trino.metadata;
 import com.google.common.util.concurrent.ListenableFuture;
 import io.airlift.slice.Slice;
 import io.trino.Session;
+import io.trino.spi.RefreshType;
 import io.trino.spi.TrinoException;
 import io.trino.spi.connector.AggregateFunction;
 import io.trino.spi.connector.AggregationApplicationResult;
@@ -74,7 +75,6 @@ import io.trino.spi.statistics.TableStatisticsMetadata;
 import io.trino.spi.type.Type;
 import io.trino.sql.analyzer.TypeSignatureProvider;
 import io.trino.sql.planner.PartitioningHandle;
-import io.trino.sql.tree.QualifiedName;
 
 import java.util.Collection;
 import java.util.List;
@@ -398,7 +398,7 @@ public interface Metadata
     /**
      * Begin refresh materialized view query
      */
-    InsertTableHandle beginRefreshMaterializedView(Session session, TableHandle tableHandle, List<TableHandle> sourceTableHandles);
+    InsertTableHandle beginRefreshMaterializedView(Session session, TableHandle tableHandle, List<TableHandle> sourceTableHandles, RefreshType refreshType);
 
     /**
      * Finish refresh materialized view query
@@ -458,7 +458,7 @@ public interface Metadata
     /**
      * Finish merge query
      */
-    void finishMerge(Session session, MergeHandle tableHandle, Collection<Slice> fragments, Collection<ComputedStatistics> computedStatistics);
+    void finishMerge(Session session, MergeHandle tableHandle, List<TableHandle> sourceTableHandles, Collection<Slice> fragments, Collection<ComputedStatistics> computedStatistics);
 
     /**
      * Returns a catalog handle for the specified catalog name.
@@ -480,18 +480,17 @@ public interface Metadata
      */
     Map<QualifiedObjectName, ViewInfo> getViews(Session session, QualifiedTablePrefix prefix);
 
-    /**
-     * Is the specified table a view.
-     */
-    default boolean isView(Session session, QualifiedObjectName viewName)
-    {
-        return getView(session, viewName).isPresent();
-    }
+    boolean isView(Session session, QualifiedObjectName viewName);
 
     /**
      * Returns the view definition for the specified view name.
      */
     Optional<ViewDefinition> getView(Session session, QualifiedObjectName viewName);
+
+    /**
+     * Returns the view definition for the specified view name.
+     */
+    Map<String, Object> getViewProperties(Session session, QualifiedObjectName viewName);
 
     /**
      * Gets the schema properties for the specified schema.
@@ -506,7 +505,7 @@ public interface Metadata
     /**
      * Creates the specified view with the specified view definition.
      */
-    void createView(Session session, QualifiedObjectName viewName, ViewDefinition definition, boolean replace);
+    void createView(Session session, QualifiedObjectName viewName, ViewDefinition definition, Map<String, Object> properties, boolean replace);
 
     /**
      * Rename the specified view.
@@ -723,8 +722,6 @@ public interface Metadata
 
     Collection<FunctionMetadata> listFunctions(Session session, CatalogSchemaName schema);
 
-    ResolvedFunction decodeFunction(QualifiedName name);
-
     Collection<CatalogFunctionMetadata> getFunctions(Session session, CatalogSchemaFunctionName catalogSchemaFunctionName);
 
     ResolvedFunction resolveBuiltinFunction(String name, List<TypeSignatureProvider> parameterTypes);
@@ -744,6 +741,8 @@ public interface Metadata
     AggregationFunctionMetadata getAggregationFunctionMetadata(Session session, ResolvedFunction resolvedFunction);
 
     FunctionDependencyDeclaration getFunctionDependencies(Session session, CatalogHandle catalogHandle, FunctionId functionId, BoundSignature boundSignature);
+
+    Collection<LanguageFunction> getLanguageFunctions(Session session, QualifiedObjectName name);
 
     boolean languageFunctionExists(Session session, QualifiedObjectName name, String signatureToken);
 
@@ -840,6 +839,15 @@ public interface Metadata
      * Note: It is ignored when retry policy is set to TASK
      */
     OptionalInt getMaxWriterTasks(Session session, String catalogName);
+
+    /**
+     * Workaround to lack of statistics about IO and CPU operations performed by the connector.
+     * In the long term, this should be replaced by improvements in the cost model.
+     *
+     * @return true if the cumulative cost of splitting a read of the specified tableHandle into multiple reads,
+     * each of which projects a subset of the required columns, is not significantly more than the cost of reading the specified tableHandle
+     */
+    boolean allowSplittingReadIntoMultipleSubQueries(Session session, TableHandle tableHandle);
 
     /**
      * Returns writer scaling options for the specified table. This method is called when table handle is not available during CTAS.

@@ -897,22 +897,12 @@ public abstract class AstVisitor<R, C>
         return visitGroupingElement(node, context);
     }
 
-    protected R visitSymbolReference(SymbolReference node, C context)
-    {
-        return visitExpression(node, context);
-    }
-
     protected R visitQuantifiedComparisonExpression(QuantifiedComparisonExpression node, C context)
     {
         return visitExpression(node, context);
     }
 
     protected R visitLambdaArgumentDeclaration(LambdaArgumentDeclaration node, C context)
-    {
-        return visitExpression(node, context);
-    }
-
-    protected R visitBindExpression(BindExpression node, C context)
     {
         return visitExpression(node, context);
     }

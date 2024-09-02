@@ -16,6 +16,7 @@ package io.trino.plugin.hive;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import io.trino.annotation.NotThreadSafe;
+import io.trino.metastore.HiveTypeName;
 import io.trino.plugin.hive.HiveSplit.BucketConversion;
 import io.trino.plugin.hive.HiveSplit.BucketValidation;
 import io.trino.spi.HostAddress;
@@ -220,7 +221,7 @@ public class InternalHiveSplit
     {
         long result = INSTANCE_SIZE +
                 estimatedSizeOf(path) +
-                estimatedSizeOf(partitionKeys, HivePartitionKey::getEstimatedSizeInBytes) +
+                estimatedSizeOf(partitionKeys, HivePartitionKey::estimatedSizeInBytes) +
                 estimatedSizeOf(blocks, InternalHiveBlock::getEstimatedSizeInBytes) +
                 estimatedSizeOf(partitionName) +
                 estimatedSizeOf(hiveColumnCoercions, (Integer key) -> INTEGER_INSTANCE_SIZE, HiveTypeName::getEstimatedSizeInBytes);

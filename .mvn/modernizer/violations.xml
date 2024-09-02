@@ -19,18 +19,6 @@
     </violation>
 
     <violation>
-        <name>java/lang/String.toLowerCase:()Ljava/lang/String;</name>
-        <version>1.1</version>
-        <comment>Prefer String.toLowerCase(java.util.Locale)</comment>
-    </violation>
-
-    <violation>
-        <name>java/lang/String.toUpperCase:()Ljava/lang/String;</name>
-        <version>1.1</version>
-        <comment>Prefer String.toUpperCase(java.util.Locale)</comment>
-    </violation>
-
-    <violation>
         <name>java/lang/String.toString:()Ljava/lang/String;</name>
         <version>1.1</version>
         <comment>Call to toString() is redundant</comment>
@@ -41,6 +29,22 @@
         <name>java/io/File.toString:()Ljava/lang/String;</name>
         <version>1.1</version>
         <comment>Prefer File.getPath()</comment>
+    </violation>
+
+    <violation>
+        <name>java/lang/Thread$Builder.factory:()Ljava/util/concurrent/ThreadFactory;</name>
+        <version>1.1</version>
+        <comment>Use io.airlift.concurrent.Threads's thread factories, as the set thread context class loader</comment>
+    </violation>
+    <violation>
+        <name>java/lang/Thread$Builder$OfPlatform.factory:()Ljava/util/concurrent/ThreadFactory;</name>
+        <version>1.1</version>
+        <comment>Use io.airlift.concurrent.Threads's thread factories, as the set thread context class loader</comment>
+    </violation>
+    <violation>
+        <name>java/lang/Thread$Builder$OfVirtual.factory:()Ljava/util/concurrent/ThreadFactory;</name>
+        <version>1.1</version>
+        <comment>Use io.airlift.concurrent.Threads's thread factories, as the set thread context class loader</comment>
     </violation>
 
     <violation>

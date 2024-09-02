@@ -84,7 +84,7 @@ public class UnregisterTableProcedure
 
     public void unregisterTable(ConnectorAccessControl accessControl, ConnectorSession session, String schemaName, String tableName)
     {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(getClass().getClassLoader())) {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(getClass().getClassLoader())) {
             doUnregisterTable(accessControl, session, schemaName, tableName);
         }
     }
@@ -99,11 +99,11 @@ public class UnregisterTableProcedure
         DeltaLakeMetadata metadata = metadataFactory.create(session.getIdentity());
         metadata.beginQuery(session);
         try (UncheckedCloseable ignore = () -> metadata.cleanupQuery(session)) {
-            LocatedTableHandle tableHandle = metadata.getTableHandle(session, schemaTableName);
+            LocatedTableHandle tableHandle = metadata.getTableHandle(session, schemaTableName, Optional.empty(), Optional.empty());
             if (tableHandle == null) {
                 throw new TableNotFoundException(schemaTableName);
             }
-            metadata.getMetastore().dropTable(session, schemaTableName, tableHandle.location(), false);
+            metadata.getMetastore().dropTable(schemaTableName, tableHandle.location(), false);
             // As a precaution, clear the caches
             statisticsAccess.invalidateCache(schemaTableName, Optional.of(tableHandle.location()));
             transactionLogAccess.invalidateCache(schemaTableName, Optional.of(tableHandle.location()));

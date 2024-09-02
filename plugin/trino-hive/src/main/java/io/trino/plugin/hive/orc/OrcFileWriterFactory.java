@@ -19,6 +19,7 @@ import io.trino.filesystem.Location;
 import io.trino.filesystem.TrinoFileSystem;
 import io.trino.filesystem.TrinoFileSystemFactory;
 import io.trino.filesystem.TrinoInputFile;
+import io.trino.metastore.StorageFormat;
 import io.trino.orc.OrcDataSink;
 import io.trino.orc.OrcDataSource;
 import io.trino.orc.OrcDataSourceId;
@@ -33,7 +34,6 @@ import io.trino.plugin.hive.HiveFileWriterFactory;
 import io.trino.plugin.hive.NodeVersion;
 import io.trino.plugin.hive.WriterKind;
 import io.trino.plugin.hive.acid.AcidTransaction;
-import io.trino.plugin.hive.metastore.StorageFormat;
 import io.trino.spi.TrinoException;
 import io.trino.spi.connector.ConnectorSession;
 import io.trino.spi.type.Type;
@@ -49,6 +49,7 @@ import java.util.Optional;
 import java.util.OptionalInt;
 import java.util.function.Supplier;
 
+import static io.trino.hive.formats.HiveClassNames.ORC_OUTPUT_FORMAT_CLASS;
 import static io.trino.orc.metadata.OrcType.createRootOrcType;
 import static io.trino.plugin.hive.HiveErrorCode.HIVE_WRITER_OPEN_ERROR;
 import static io.trino.plugin.hive.HiveErrorCode.HIVE_WRITE_VALIDATION_FAILED;
@@ -65,7 +66,7 @@ import static io.trino.plugin.hive.HiveSessionProperties.isOrcOptimizedWriterVal
 import static io.trino.plugin.hive.acid.AcidSchema.ACID_COLUMN_NAMES;
 import static io.trino.plugin.hive.acid.AcidSchema.createAcidColumnTrinoTypes;
 import static io.trino.plugin.hive.acid.AcidSchema.createRowType;
-import static io.trino.plugin.hive.util.HiveClassNames.ORC_OUTPUT_FORMAT_CLASS;
+import static io.trino.plugin.hive.util.HiveTypeUtil.getType;
 import static io.trino.plugin.hive.util.HiveUtil.getColumnNames;
 import static io.trino.plugin.hive.util.HiveUtil.getColumnTypes;
 import static io.trino.plugin.hive.util.HiveUtil.getOrcWriterOptions;
@@ -140,7 +141,7 @@ public class OrcFileWriterFactory
         // an index to rearrange columns in the proper order
         List<String> fileColumnNames = getColumnNames(schema);
         List<Type> fileColumnTypes = getColumnTypes(schema).stream()
-                .map(hiveType -> hiveType.getType(typeManager, getTimestampPrecision(session)))
+                .map(hiveType -> getType(hiveType, typeManager, getTimestampPrecision(session)))
                 .collect(toList());
 
         int[] fileInputColumnIndexes = fileColumnNames.stream()

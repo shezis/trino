@@ -15,7 +15,6 @@ package io.trino.execution;
 
 import com.google.common.collect.ImmutableList;
 import com.google.inject.Key;
-import com.google.inject.TypeLiteral;
 import io.trino.client.NodeVersion;
 import io.trino.connector.MockConnectorPlugin;
 import io.trino.execution.warnings.WarningCollector;
@@ -46,6 +45,7 @@ import static io.airlift.concurrent.MoreFutures.getFutureValue;
 import static io.trino.SessionTestUtils.TEST_SESSION;
 import static io.trino.execution.querystats.PlanOptimizersStatsCollector.createPlanOptimizersStatsCollector;
 import static java.util.Collections.emptyList;
+import static java.util.Locale.ENGLISH;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 
@@ -65,7 +65,7 @@ public class TestCreateCatalogTask
         QueryRunner queryRunner = new StandaloneQueryRunner(TEST_SESSION);
         queryRunner.installPlugin(new TpchPlugin());
         queryRunner.installPlugin(new MockConnectorPlugin(new FailConnectorFactory()));
-        Map<Class<? extends Statement>, DataDefinitionTask<?>> tasks = queryRunner.getCoordinator().getInstance(Key.get(new TypeLiteral<Map<Class<? extends Statement>, DataDefinitionTask<?>>>() {}));
+        Map<Class<? extends Statement>, DataDefinitionTask<?>> tasks = queryRunner.getCoordinator().getInstance(new Key<>() {});
         task = (CreateCatalogTask) tasks.get(CreateCatalog.class);
         queryStateMachine = QueryStateMachine.begin(
                 Optional.empty(),
@@ -101,6 +101,17 @@ public class TestCreateCatalogTask
     public void testDuplicatedCreateCatalog()
     {
         CreateCatalog statement = new CreateCatalog(new Identifier(TEST_CATALOG), false, new Identifier("tpch"), TPCH_PROPERTIES, Optional.empty(), Optional.empty());
+        getFutureValue(task.execute(statement, queryStateMachine, emptyList(), WarningCollector.NOOP));
+        assertThat(queryRunner.getPlannerContext().getMetadata().catalogExists(queryStateMachine.getSession(), TEST_CATALOG)).isTrue();
+        assertThatExceptionOfType(TrinoException.class)
+                .isThrownBy(() -> getFutureValue(task.execute(statement, queryStateMachine, emptyList(), WarningCollector.NOOP)))
+                .withMessage("Catalog '%s' already exists", TEST_CATALOG);
+    }
+
+    @Test
+    public void testCaseInsensitiveDuplicatedCreateCatalog()
+    {
+        CreateCatalog statement = new CreateCatalog(new Identifier(TEST_CATALOG.toUpperCase(ENGLISH)), false, new Identifier("tpch"), TPCH_PROPERTIES, Optional.empty(), Optional.empty());
         getFutureValue(task.execute(statement, queryStateMachine, emptyList(), WarningCollector.NOOP));
         assertThat(queryRunner.getPlannerContext().getMetadata().catalogExists(queryStateMachine.getSession(), TEST_CATALOG)).isTrue();
         assertThatExceptionOfType(TrinoException.class)

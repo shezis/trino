@@ -13,41 +13,53 @@
  */
 package io.trino.plugin.hive.metastore.glue;
 
-import com.amazonaws.auth.DefaultAWSCredentialsProviderChain;
-import com.amazonaws.services.glue.AWSGlueAsync;
-import com.google.common.collect.ImmutableSet;
+import io.opentelemetry.api.OpenTelemetry;
+import io.trino.plugin.hive.metastore.glue.GlueHiveMetastore.TableKind;
+import software.amazon.awssdk.services.glue.GlueClient;
 
+import java.io.IOException;
+import java.net.URI;
 import java.nio.file.Path;
+import java.util.EnumSet;
+import java.util.function.Consumer;
 
-import static com.google.common.util.concurrent.MoreExecutors.directExecutor;
+import static com.google.common.base.Verify.verify;
 import static io.trino.plugin.hive.HiveTestUtils.HDFS_FILE_SYSTEM_FACTORY;
-import static io.trino.plugin.hive.metastore.glue.GlueClientUtil.createAsyncGlueClient;
+import static io.trino.plugin.hive.metastore.glue.GlueMetastoreModule.createGlueClient;
+import static java.nio.file.Files.createDirectories;
+import static java.nio.file.Files.exists;
+import static java.nio.file.Files.isDirectory;
 
 public final class TestingGlueHiveMetastore
 {
     private TestingGlueHiveMetastore() {}
 
-    public static GlueHiveMetastore createTestingGlueHiveMetastore(Path defaultWarehouseDir)
+    public static GlueHiveMetastore createTestingGlueHiveMetastore(Path defaultWarehouseDir, Consumer<AutoCloseable> registerResource)
     {
-        GlueHiveMetastoreConfig glueConfig = new GlueHiveMetastoreConfig()
-                .setDefaultWarehouseDir(defaultWarehouseDir.toUri().toString());
-        GlueMetastoreStats stats = new GlueMetastoreStats();
-        return new GlueHiveMetastore(
-                HDFS_FILE_SYSTEM_FACTORY,
-                glueConfig,
-                directExecutor(),
-                new DefaultGlueColumnStatisticsProviderFactory(directExecutor(), directExecutor()),
-                createTestingAsyncGlueClient(glueConfig, stats),
-                stats,
-                table -> true);
+        if (!exists(defaultWarehouseDir)) {
+            try {
+                createDirectories(defaultWarehouseDir);
+            }
+            catch (IOException e) {
+                throw new RuntimeException("Could not create directory: %s".formatted(defaultWarehouseDir), e);
+            }
+        }
+        verify(isDirectory(defaultWarehouseDir), "%s is not a directory", defaultWarehouseDir);
+        return createTestingGlueHiveMetastore(defaultWarehouseDir.toUri(), registerResource);
     }
 
-    public static AWSGlueAsync createTestingAsyncGlueClient(GlueHiveMetastoreConfig glueConfig, GlueMetastoreStats stats)
+    public static GlueHiveMetastore createTestingGlueHiveMetastore(URI warehouseUri, Consumer<AutoCloseable> registerResource)
     {
-        return createAsyncGlueClient(
+        GlueHiveMetastoreConfig glueConfig = new GlueHiveMetastoreConfig()
+                .setDefaultWarehouseDir(warehouseUri.toString());
+        GlueClient glueClient = createGlueClient(glueConfig, OpenTelemetry.noop());
+        registerResource.accept(glueClient);
+        return new GlueHiveMetastore(
+                glueClient,
+                new GlueContext(glueConfig),
+                GlueCache.NOOP,
+                HDFS_FILE_SYSTEM_FACTORY,
                 glueConfig,
-                DefaultAWSCredentialsProviderChain.getInstance(),
-                ImmutableSet.of(),
-                stats.newRequestMetricsCollector());
+                EnumSet.allOf(TableKind.class));
     }
 }

@@ -18,6 +18,7 @@ import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.util.concurrent.Futures;
 import com.google.common.util.concurrent.ListenableFuture;
+import io.airlift.configuration.secrets.SecretsResolver;
 import io.airlift.node.NodeInfo;
 import io.airlift.stats.TestingGcMonitor;
 import io.airlift.tracing.Tracing;
@@ -27,10 +28,8 @@ import io.opentelemetry.api.trace.Span;
 import io.trino.Session;
 import io.trino.connector.CatalogConnector;
 import io.trino.connector.CatalogFactory;
-import io.trino.connector.CatalogProperties;
 import io.trino.connector.CatalogPruneTask;
 import io.trino.connector.CatalogPruneTaskConfig;
-import io.trino.connector.ConnectorName;
 import io.trino.connector.ConnectorServices;
 import io.trino.connector.ConnectorServicesProvider;
 import io.trino.connector.MockConnectorFactory;
@@ -44,9 +43,12 @@ import io.trino.execution.executor.TaskHandle;
 import io.trino.memory.LocalMemoryManager;
 import io.trino.memory.NodeMemoryConfig;
 import io.trino.metadata.WorkerLanguageFunctionProvider;
+import io.trino.spi.catalog.CatalogName;
+import io.trino.spi.catalog.CatalogProperties;
 import io.trino.spi.connector.CatalogHandle;
 import io.trino.spi.connector.Connector;
 import io.trino.spi.connector.ConnectorFactory;
+import io.trino.spi.connector.ConnectorName;
 import io.trino.spiller.LocalSpillManager;
 import io.trino.spiller.NodeSpillConfig;
 import io.trino.sql.planner.PlanFragment;
@@ -83,7 +85,7 @@ import static io.trino.execution.TaskTestUtils.createTestingPlanner;
 import static io.trino.execution.buffer.PipelinedOutputBuffers.BufferType.PARTITIONED;
 import static io.trino.metadata.CatalogManager.NO_CATALOGS;
 import static io.trino.spi.connector.CatalogHandle.createRootCatalogHandle;
-import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
+import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.junit.jupiter.api.TestInstance.Lifecycle.PER_CLASS;
 import static org.junit.jupiter.api.parallel.ExecutionMode.SAME_THREAD;
 
@@ -117,17 +119,18 @@ public class TestSqlTaskManagerRaceWithCatalogPrune
         @Override
         public CatalogConnector createCatalog(CatalogProperties catalogProperties)
         {
-            Connector connector = MockConnectorFactory.create().create(catalogProperties.getCatalogHandle().getCatalogName(), catalogProperties.getProperties(), new TestingConnectorContext());
+            Connector connector = MockConnectorFactory.create().create(catalogProperties.catalogHandle().getCatalogName().toString(), catalogProperties.properties(), new TestingConnectorContext());
             ConnectorServices noOpConnectorService = new ConnectorServices(
                     Tracing.noopTracer(),
-                    catalogProperties.getCatalogHandle(),
+                    catalogProperties.catalogHandle(),
                     connector);
             return new CatalogConnector(
-                    catalogProperties.getCatalogHandle(),
+                    catalogProperties.catalogHandle(),
                     new ConnectorName("mock"),
                     noOpConnectorService,
                     noOpConnectorService,
                     noOpConnectorService,
+                    new LocalMemoryManager(new NodeMemoryConfig()),
                     Optional.of(catalogProperties));
         }
 
@@ -197,7 +200,7 @@ public class TestSqlTaskManagerRaceWithCatalogPrune
         Future<Void> catalogTaskFuture = Futures.submit(() ->
         {
             for (int i = 0; i < NUM_TASKS; i++) {
-                String catalogName = "catalog_" + i;
+                CatalogName catalogName = new CatalogName("catalog_" + i);
                 CatalogHandle catalogHandle = createRootCatalogHandle(catalogName, new CatalogHandle.CatalogVersion(UUID.randomUUID().toString()));
                 TaskId taskId = newTaskId();
                 workerTaskManager.updateTask(
@@ -215,7 +218,8 @@ public class TestSqlTaskManagerRaceWithCatalogPrune
                 catch (InterruptedException e) {
                     throw new RuntimeException(e);
                 }
-                assertDoesNotThrow(() -> workerConnectorServiceProvider.getConnectorServices(catalogHandle));
+                assertThatCode(() -> workerConnectorServiceProvider.getConnectorServices(catalogHandle))
+                        .doesNotThrowAnyException();
                 workerTaskManager.cancelTask(taskId);
                 if ((i & 63) == 0) {
                     workerTaskManager.removeOldTasks();
@@ -236,8 +240,10 @@ public class TestSqlTaskManagerRaceWithCatalogPrune
             }
         }, threadPoolExecutor);
 
-        assertDoesNotThrow(() -> catalogTaskFuture.get(2, TimeUnit.MINUTES));
-        assertDoesNotThrow(() -> pruneCatalogsFuture.get(2, TimeUnit.MINUTES));
+        assertThatCode(() -> catalogTaskFuture.get(2, TimeUnit.MINUTES))
+                .doesNotThrowAnyException();
+        assertThatCode(() -> pruneCatalogsFuture.get(2, TimeUnit.MINUTES))
+                .doesNotThrowAnyException();
     }
 
     private TaskId newTaskId()
@@ -264,7 +270,7 @@ public class TestSqlTaskManagerRaceWithCatalogPrune
                 new NodeSpillConfig(),
                 new TestingGcMonitor(),
                 noopTracer(),
-                new ExchangeManagerRegistry(OpenTelemetry.noop(), Tracing.noopTracer()),
+                new ExchangeManagerRegistry(OpenTelemetry.noop(), Tracing.noopTracer(), new SecretsResolver(ImmutableMap.of())),
                 ignore -> true);
     }
 

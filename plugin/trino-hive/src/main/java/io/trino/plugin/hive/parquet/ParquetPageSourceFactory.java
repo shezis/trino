@@ -22,6 +22,7 @@ import io.trino.filesystem.TrinoFileSystem;
 import io.trino.filesystem.TrinoFileSystemFactory;
 import io.trino.filesystem.TrinoInputFile;
 import io.trino.memory.context.AggregatedMemoryContext;
+import io.trino.metastore.HiveType;
 import io.trino.parquet.Column;
 import io.trino.parquet.Field;
 import io.trino.parquet.ParquetCorruptionException;
@@ -29,6 +30,8 @@ import io.trino.parquet.ParquetDataSource;
 import io.trino.parquet.ParquetDataSourceId;
 import io.trino.parquet.ParquetReaderOptions;
 import io.trino.parquet.ParquetWriteValidation;
+import io.trino.parquet.metadata.FileMetadata;
+import io.trino.parquet.metadata.ParquetMetadata;
 import io.trino.parquet.predicate.TupleDomainParquetPredicate;
 import io.trino.parquet.reader.MetadataReader;
 import io.trino.parquet.reader.ParquetReader;
@@ -39,21 +42,21 @@ import io.trino.plugin.hive.HiveColumnHandle;
 import io.trino.plugin.hive.HiveColumnProjectionInfo;
 import io.trino.plugin.hive.HiveConfig;
 import io.trino.plugin.hive.HivePageSourceFactory;
-import io.trino.plugin.hive.HiveType;
 import io.trino.plugin.hive.ReaderColumns;
 import io.trino.plugin.hive.ReaderPageSource;
 import io.trino.plugin.hive.acid.AcidTransaction;
+import io.trino.plugin.hive.coercions.TypeCoercer;
 import io.trino.spi.TrinoException;
 import io.trino.spi.connector.ConnectorPageSource;
 import io.trino.spi.connector.ConnectorSession;
 import io.trino.spi.predicate.Domain;
 import io.trino.spi.predicate.TupleDomain;
 import org.apache.parquet.column.ColumnDescriptor;
-import org.apache.parquet.hadoop.metadata.FileMetaData;
-import org.apache.parquet.hadoop.metadata.ParquetMetadata;
+import org.apache.parquet.io.ColumnIO;
 import org.apache.parquet.io.MessageColumnIO;
 import org.apache.parquet.schema.GroupType;
 import org.apache.parquet.schema.MessageType;
+import org.apache.parquet.schema.PrimitiveType;
 import org.apache.parquet.schema.Type;
 import org.joda.time.DateTimeZone;
 
@@ -68,7 +71,9 @@ import java.util.Set;
 
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.collect.ImmutableList.toImmutableList;
+import static io.trino.hive.formats.HiveClassNames.PARQUET_HIVE_SERDE_CLASS;
 import static io.trino.memory.context.AggregatedMemoryContext.newSimpleAggregatedMemoryContext;
+import static io.trino.metastore.type.Category.PRIMITIVE;
 import static io.trino.parquet.ParquetTypeUtils.constructField;
 import static io.trino.parquet.ParquetTypeUtils.getColumnIO;
 import static io.trino.parquet.ParquetTypeUtils.getDescriptors;
@@ -86,11 +91,11 @@ import static io.trino.plugin.hive.HiveSessionProperties.getParquetMaxReadBlockS
 import static io.trino.plugin.hive.HiveSessionProperties.getParquetSmallFileThreshold;
 import static io.trino.plugin.hive.HiveSessionProperties.isParquetIgnoreStatistics;
 import static io.trino.plugin.hive.HiveSessionProperties.isParquetUseColumnIndex;
+import static io.trino.plugin.hive.HiveSessionProperties.isParquetVectorizedDecodingEnabled;
 import static io.trino.plugin.hive.HiveSessionProperties.isUseParquetColumnNames;
 import static io.trino.plugin.hive.HiveSessionProperties.useParquetBloomFilter;
 import static io.trino.plugin.hive.parquet.ParquetPageSource.handleException;
-import static io.trino.plugin.hive.type.Category.PRIMITIVE;
-import static io.trino.plugin.hive.util.HiveClassNames.PARQUET_HIVE_SERDE_CLASS;
+import static io.trino.plugin.hive.parquet.ParquetTypeTranslator.createCoercer;
 import static io.trino.plugin.hive.util.HiveUtil.getDeserializerClassName;
 import static io.trino.plugin.hive.util.SerdeConstants.SERIALIZATION_LIB;
 import static io.trino.spi.type.BigintType.BIGINT;
@@ -186,7 +191,8 @@ public class ParquetPageSourceFactory
                         .withMaxReadBlockRowCount(getParquetMaxReadBlockRowCount(session))
                         .withSmallFileThreshold(getParquetSmallFileThreshold(session))
                         .withUseColumnIndex(isParquetUseColumnIndex(session))
-                        .withBloomFilter(useParquetBloomFilter(session)),
+                        .withBloomFilter(useParquetBloomFilter(session))
+                        .withVectorizedDecodingEnabled(isParquetVectorizedDecodingEnabled(session)),
                 Optional.empty(),
                 domainCompactionThreshold,
                 OptionalLong.of(estimatedFileSize)));
@@ -218,7 +224,7 @@ public class ParquetPageSourceFactory
             dataSource = createDataSource(inputFile, estimatedFileSize, options, memoryContext, stats);
 
             ParquetMetadata parquetMetadata = MetadataReader.readFooter(dataSource, parquetWriteValidation);
-            FileMetaData fileMetaData = parquetMetadata.getFileMetaData();
+            FileMetadata fileMetaData = parquetMetadata.getFileMetaData();
             fileSchema = fileMetaData.getSchema();
 
             Optional<MessageType> message = getParquetMessageType(columns, useColumnNames, fileSchema);
@@ -288,7 +294,7 @@ public class ParquetPageSourceFactory
                     dataSource.close();
                 }
             }
-            catch (IOException ignored) {
+            catch (IOException _) {
             }
             if (e instanceof TrinoException) {
                 throw (TrinoException) e;
@@ -346,7 +352,7 @@ public class ParquetPageSourceFactory
         }
 
         List<org.apache.parquet.schema.Type> subfieldTypes = subFieldTypesOptional.get();
-        org.apache.parquet.schema.Type type = subfieldTypes.get(subfieldTypes.size() - 1);
+        org.apache.parquet.schema.Type type = subfieldTypes.getLast();
         for (int i = subfieldTypes.size() - 2; i >= 0; --i) {
             GroupType groupType = subfieldTypes.get(i).asGroupType();
             type = new GroupType(groupType.getRepetition(), groupType.getName(), ImmutableList.of(type));
@@ -435,13 +441,28 @@ public class ParquetPageSourceFactory
                 continue;
             }
             String columnName = useColumnNames ? column.getBaseColumnName() : fileSchema.getFields().get(column.getBaseHiveColumnIndex()).getName();
-            Optional<Field> field = constructField(column.getBaseType(), lookupColumnByName(messageColumn, columnName));
+
+            Optional<TypeCoercer<?, ?>> coercer = Optional.empty();
+            ColumnIO columnIO = lookupColumnByName(messageColumn, columnName);
+            if (columnIO != null && columnIO.getType().isPrimitive()) {
+                PrimitiveType primitiveType = columnIO.getType().asPrimitiveType();
+                coercer = createCoercer(primitiveType.getPrimitiveTypeName(), primitiveType.getLogicalTypeAnnotation(), column.getBaseType());
+            }
+
+            io.trino.spi.type.Type readType = coercer.map(TypeCoercer::getFromType).orElseGet(column::getBaseType);
+
+            Optional<Field> field = constructField(readType, columnIO);
             if (field.isEmpty()) {
-                pageSourceBuilder.addNullColumn(column.getBaseType());
+                pageSourceBuilder.addNullColumn(readType);
                 continue;
             }
             parquetColumnFieldsBuilder.add(new Column(columnName, field.get()));
-            pageSourceBuilder.addSourceColumn(sourceChannel);
+            if (coercer.isPresent()) {
+                pageSourceBuilder.addCoercedColumn(sourceChannel, coercer.get());
+            }
+            else {
+                pageSourceBuilder.addSourceColumn(sourceChannel);
+            }
             sourceChannel++;
         }
 

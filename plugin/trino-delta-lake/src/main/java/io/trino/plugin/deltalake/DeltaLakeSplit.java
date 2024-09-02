@@ -187,18 +187,18 @@ public class DeltaLakeSplit
                 + sizeOf(fileRowCount, value -> LONG_INSTANCE_SIZE)
                 + sizeOf(deletionVector, DeletionVectorEntry::sizeInBytes)
                 + splitWeight.getRetainedSizeInBytes()
-                + statisticsPredicate.getRetainedSizeInBytes(DeltaLakeColumnHandle::getRetainedSizeInBytes)
+                + statisticsPredicate.getRetainedSizeInBytes(DeltaLakeColumnHandle::retainedSizeInBytes)
                 + estimatedSizeOf(partitionKeys, SizeOf::estimatedSizeOf, value -> sizeOf(value, SizeOf::estimatedSizeOf));
     }
 
     @Override
-    public Object getInfo()
+    public Map<String, String> getSplitInfo()
     {
-        return ImmutableMap.builder()
+        return ImmutableMap.<String, String>builder()
                 .put("path", path)
-                .put("start", start)
-                .put("length", length)
-                .put("addresses", addresses)
+                .put("start", String.valueOf(start))
+                .put("length", String.valueOf(length))
+                .put("addresses", addresses.toString())
                 .buildOrThrow();
     }
 

@@ -39,6 +39,7 @@ public final class JdbcClientStats
     private final JdbcApiStats dropTable = new JdbcApiStats();
     private final JdbcApiStats finishInsertTable = new JdbcApiStats();
     private final JdbcApiStats getColumns = new JdbcApiStats();
+    private final JdbcApiStats getAllTableComments = new JdbcApiStats();
     private final JdbcApiStats getConnectionWithHandle = new JdbcApiStats();
     private final JdbcApiStats getConnectionWithSplit = new JdbcApiStats();
     private final JdbcApiStats getConnectionWithProcedure = new JdbcApiStats();
@@ -63,6 +64,7 @@ public final class JdbcClientStats
     private final JdbcApiStats toWriteMapping = new JdbcApiStats();
     private final JdbcApiStats implementAggregation = new JdbcApiStats();
     private final JdbcApiStats convertPredicate = new JdbcApiStats();
+    private final JdbcApiStats convertProjection = new JdbcApiStats();
     private final JdbcApiStats getTableScanRedirection = new JdbcApiStats();
     private final JdbcApiStats delete = new JdbcApiStats();
     private final JdbcApiStats update = new JdbcApiStats();
@@ -213,6 +215,13 @@ public final class JdbcClientStats
     public JdbcApiStats getGetColumns()
     {
         return getColumns;
+    }
+
+    @Managed
+    @Nested
+    public JdbcApiStats getGetAllTableComments()
+    {
+        return getAllTableComments;
     }
 
     @Managed
@@ -381,6 +390,13 @@ public final class JdbcClientStats
     public JdbcApiStats getConvertPredicate()
     {
         return convertPredicate;
+    }
+
+    @Managed
+    @Nested
+    public JdbcApiStats getConvertProjection()
+    {
+        return convertProjection;
     }
 
     @Managed

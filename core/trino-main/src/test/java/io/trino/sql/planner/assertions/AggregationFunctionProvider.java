@@ -17,14 +17,15 @@ import com.google.common.base.Joiner;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import io.trino.spi.connector.SortOrder;
+import io.trino.sql.ir.Expression;
 import io.trino.sql.planner.OrderingScheme;
 import io.trino.sql.planner.Symbol;
-import io.trino.sql.tree.Expression;
 
 import java.util.List;
 import java.util.Optional;
 
 import static io.trino.sql.planner.assertions.PlanMatchPattern.toSymbolReferences;
+import static io.trino.type.UnknownType.UNKNOWN;
 import static java.lang.String.format;
 import static java.util.Objects.requireNonNull;
 
@@ -68,7 +69,7 @@ final class AggregationFunctionProvider
             ImmutableMap.Builder<Symbol, SortOrder> orders = ImmutableMap.builder();
 
             for (PlanMatchPattern.Ordering ordering : this.orderBy) {
-                Symbol symbol = Symbol.from(aliases.get(ordering.getField()));
+                Symbol symbol = new Symbol(UNKNOWN, aliases.get(ordering.getField()).name());
                 fields.add(symbol);
                 orders.put(symbol, ordering.getSortOrder());
             }

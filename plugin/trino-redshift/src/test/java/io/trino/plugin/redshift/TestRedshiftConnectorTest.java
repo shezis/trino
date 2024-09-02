@@ -14,33 +14,49 @@
 package io.trino.plugin.redshift;
 
 import com.google.common.collect.ImmutableList;
-import com.google.common.collect.ImmutableMap;
+import com.google.common.collect.Sets;
+import io.airlift.log.Logger;
+import io.airlift.units.Duration;
 import io.trino.Session;
 import io.trino.plugin.jdbc.BaseJdbcConnectorTest;
+import io.trino.plugin.jdbc.RemoteDatabaseEvent;
+import io.trino.plugin.jdbc.RemoteDatabaseEvent.Status;
+import io.trino.plugin.jdbc.RemoteLogTracingEvent;
 import io.trino.testing.QueryRunner;
 import io.trino.testing.TestingConnectorBehavior;
 import io.trino.testing.sql.SqlExecutor;
 import io.trino.testing.sql.TestTable;
-import io.trino.tpch.TpchTable;
+import org.jdbi.v3.core.Handle;
+import org.jdbi.v3.core.Jdbi;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
 import java.util.Optional;
 import java.util.OptionalInt;
+import java.util.Set;
+import java.util.concurrent.ScheduledThreadPoolExecutor;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 import java.util.stream.Stream;
 
 import static com.google.common.collect.ImmutableList.toImmutableList;
+import static io.airlift.concurrent.Threads.daemonThreadsNamed;
+import static io.trino.SystemSessionProperties.DISTINCT_AGGREGATIONS_STRATEGY;
 import static io.trino.plugin.jdbc.TypeHandlingJdbcSessionProperties.UNSUPPORTED_TYPE_HANDLING;
 import static io.trino.plugin.jdbc.UnsupportedTypeHandling.CONVERT_TO_VARCHAR;
-import static io.trino.plugin.redshift.RedshiftQueryRunner.TEST_SCHEMA;
-import static io.trino.plugin.redshift.RedshiftQueryRunner.createRedshiftQueryRunner;
-import static io.trino.plugin.redshift.RedshiftQueryRunner.executeInRedshift;
-import static io.trino.plugin.redshift.RedshiftQueryRunner.executeWithRedshift;
+import static io.trino.plugin.redshift.TestingRedshiftServer.JDBC_PASSWORD;
+import static io.trino.plugin.redshift.TestingRedshiftServer.JDBC_URL;
+import static io.trino.plugin.redshift.TestingRedshiftServer.JDBC_USER;
+import static io.trino.plugin.redshift.TestingRedshiftServer.TEST_DATABASE;
+import static io.trino.plugin.redshift.TestingRedshiftServer.TEST_SCHEMA;
+import static io.trino.plugin.redshift.TestingRedshiftServer.executeInRedshift;
+import static io.trino.plugin.redshift.TestingRedshiftServer.executeWithRedshift;
 import static io.trino.testing.TestingNames.randomNameSuffix;
+import static java.lang.Math.round;
 import static java.lang.String.format;
 import static java.util.Locale.ENGLISH;
+import static java.util.Objects.requireNonNull;
+import static java.util.concurrent.TimeUnit.SECONDS;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.junit.jupiter.api.Assumptions.abort;
@@ -48,16 +64,19 @@ import static org.junit.jupiter.api.Assumptions.abort;
 public class TestRedshiftConnectorTest
         extends BaseJdbcConnectorTest
 {
+    private static final String LOG_CANCELLATION_EVENT = "cancelled on user's request";
+
+    private final RemoteDatabaseEventMonitor remoteDatabaseEventMonitor = new RemoteDatabaseEventMonitor();
+
     @Override
     protected QueryRunner createQueryRunner()
             throws Exception
     {
-        return createRedshiftQueryRunner(
-                ImmutableMap.of(),
-                ImmutableMap.of(),
+        return RedshiftQueryRunner.builder()
                 // NOTE this can cause tests to time-out if larger tables like
                 //  lineitem and orders need to be re-created.
-                TpchTable.getTables());
+                .setInitialTables(REQUIRED_TPCH_TABLES)
+                .build();
     }
 
     @Override
@@ -65,22 +84,23 @@ public class TestRedshiftConnectorTest
     {
         return switch (connectorBehavior) {
             case SUPPORTS_COMMENT_ON_COLUMN,
-                    SUPPORTS_JOIN_PUSHDOWN,
-                    SUPPORTS_JOIN_PUSHDOWN_WITH_VARCHAR_EQUALITY -> true;
+                 SUPPORTS_JOIN_PUSHDOWN,
+                 SUPPORTS_CANCELLATION,
+                 SUPPORTS_JOIN_PUSHDOWN_WITH_VARCHAR_EQUALITY -> true;
             case SUPPORTS_ADD_COLUMN_NOT_NULL_CONSTRAINT,
-                    SUPPORTS_ADD_COLUMN_WITH_COMMENT,
-                    SUPPORTS_AGGREGATION_PUSHDOWN_CORRELATION,
-                    SUPPORTS_AGGREGATION_PUSHDOWN_COVARIANCE,
-                    SUPPORTS_AGGREGATION_PUSHDOWN_REGRESSION,
-                    SUPPORTS_ARRAY,
-                    SUPPORTS_CREATE_TABLE_WITH_COLUMN_COMMENT,
-                    SUPPORTS_DROP_NOT_NULL_CONSTRAINT,
-                    SUPPORTS_DROP_SCHEMA_CASCADE,
-                    SUPPORTS_JOIN_PUSHDOWN_WITH_DISTINCT_FROM,
-                    SUPPORTS_JOIN_PUSHDOWN_WITH_FULL_JOIN,
-                    SUPPORTS_RENAME_TABLE_ACROSS_SCHEMAS,
-                    SUPPORTS_ROW_TYPE,
-                    SUPPORTS_SET_COLUMN_TYPE -> false;
+                 SUPPORTS_ADD_COLUMN_WITH_COMMENT,
+                 SUPPORTS_AGGREGATION_PUSHDOWN_CORRELATION,
+                 SUPPORTS_AGGREGATION_PUSHDOWN_COVARIANCE,
+                 SUPPORTS_AGGREGATION_PUSHDOWN_REGRESSION,
+                 SUPPORTS_ARRAY,
+                 SUPPORTS_CREATE_TABLE_WITH_COLUMN_COMMENT,
+                 SUPPORTS_DROP_NOT_NULL_CONSTRAINT,
+                 SUPPORTS_DROP_SCHEMA_CASCADE,
+                 SUPPORTS_JOIN_PUSHDOWN_WITH_DISTINCT_FROM,
+                 SUPPORTS_JOIN_PUSHDOWN_WITH_FULL_JOIN,
+                 SUPPORTS_RENAME_TABLE_ACROSS_SCHEMAS,
+                 SUPPORTS_ROW_TYPE,
+                 SUPPORTS_SET_COLUMN_TYPE -> false;
             default -> super.hasBehavior(connectorBehavior);
         };
     }
@@ -395,7 +415,27 @@ public class TestRedshiftConnectorTest
                     .matches("VALUES BIGINT '6'")
                     .isFullyPushedDown();
 
-            assertThat(query("SELECT count(DISTINCT t_char), count(DISTINCT t_varchar) FROM " + testTable.getName()))
+            Session withMarkDistinct = Session.builder(getSession())
+                    .setSystemProperty(DISTINCT_AGGREGATIONS_STRATEGY, "mark_distinct")
+                    .build();
+
+            Session withSingleStepDistinct = Session.builder(getSession())
+                    .setSystemProperty(DISTINCT_AGGREGATIONS_STRATEGY, "single_step")
+                    .build();
+
+            Session withPreAggregate = Session.builder(getSession())
+                    .setSystemProperty(DISTINCT_AGGREGATIONS_STRATEGY, "pre_aggregate")
+                    .build();
+
+            assertThat(query(withMarkDistinct, "SELECT count(DISTINCT t_char), count(DISTINCT t_varchar) FROM " + testTable.getName()))
+                    .matches("VALUES (BIGINT '6', BIGINT '6')")
+                    .isFullyPushedDown();
+
+            assertThat(query(withSingleStepDistinct, "SELECT count(DISTINCT t_char), count(DISTINCT t_varchar) FROM " + testTable.getName()))
+                    .matches("VALUES (BIGINT '6', BIGINT '6')")
+                    .isFullyPushedDown();
+
+            assertThat(query(withPreAggregate, "SELECT count(DISTINCT t_char), count(DISTINCT t_varchar) FROM " + testTable.getName()))
                     .matches("VALUES (BIGINT '6', BIGINT '6')")
                     .isFullyPushedDown();
         }
@@ -664,7 +704,43 @@ public class TestRedshiftConnectorTest
     @Override
     protected SqlExecutor onRemoteDatabase()
     {
-        return RedshiftQueryRunner::executeInRedshift;
+        return TestingRedshiftServer::executeInRedshift;
+    }
+
+    private SqlExecutor onRemoteDatabaseWithSchema(String schema)
+    {
+        return sql -> executeInRedshift("SET search_path TO %s; %s".formatted(schema, sql));
+    }
+
+    @Override
+    protected void startTracingDatabaseEvent(RemoteLogTracingEvent event)
+    {
+        remoteDatabaseEventMonitor.startTracingDatabaseEvent(event);
+    }
+
+    @Override
+    protected void stopTracingDatabaseEvent(RemoteLogTracingEvent event)
+    {
+        remoteDatabaseEventMonitor.stopTracingDatabaseEvent(event);
+    }
+
+    @Override
+    protected io.trino.testing.sql.TestView createSleepingView(Duration minimalQueryDuration)
+    {
+        long secondsToSleep = round(minimalQueryDuration.convertTo(SECONDS).getValue() + 1);
+        // pg_sleep unsupported: https://docs.aws.amazon.com/redshift/latest/dg/c_unsupported-postgresql-functions.html,
+        // adding a python UDF replacement
+        onRemoteDatabaseWithSchema(TEST_SCHEMA).execute("""
+                CREATE OR REPLACE FUNCTION janky_sleep (x float) RETURNS bool IMMUTABLE as $$
+                    from time import sleep
+                    sleep(x)
+                    return True
+                $$ LANGUAGE plpythonu;
+                """);
+        return new io.trino.testing.sql.TestView(
+                onRemoteDatabaseWithSchema(TEST_SCHEMA),
+                "test_sleeping_view",
+                format("SELECT 1 FROM janky_sleep(%d)", secondsToSleep));
     }
 
     @Test
@@ -697,6 +773,82 @@ public class TestRedshiftConnectorTest
         public String getName()
         {
             return name;
+        }
+    }
+
+    private static class RemoteDatabaseEventMonitor
+            implements Runnable
+    {
+        private static final Logger log = Logger.get(RemoteDatabaseEventMonitor.class);
+
+        private final Jdbi jdbi;
+        private final Set<RemoteLogTracingEvent> tracingEvents;
+        private ScheduledThreadPoolExecutor executor;
+
+        private RemoteDatabaseEventMonitor()
+        {
+            jdbi = Jdbi.create(JDBC_URL, JDBC_USER, JDBC_PASSWORD);
+            tracingEvents = Sets.newConcurrentHashSet();
+        }
+
+        public void startTracingDatabaseEvent(RemoteLogTracingEvent event)
+        {
+            if (tracingEvents.isEmpty()) {
+                executor = new ScheduledThreadPoolExecutor(1, daemonThreadsNamed("redshift-database-event-monitor"));
+                executor.scheduleWithFixedDelay(this, 0, 5, SECONDS);
+            }
+            tracingEvents.add(event);
+        }
+
+        public void stopTracingDatabaseEvent(RemoteLogTracingEvent event)
+        {
+            tracingEvents.remove(event);
+            if (tracingEvents.isEmpty()) {
+                executor.shutdown();
+            }
+        }
+
+        @Override
+        public void run()
+        {
+            if (tracingEvents.isEmpty()) {
+                return;
+            }
+
+            try {
+                getRecentQueries()
+                        .forEach(remoteDatabaseEvent -> tracingEvents.forEach(tracingEvent -> tracingEvent.accept(remoteDatabaseEvent)));
+            }
+            catch (Exception e) {
+                // ignore exceptions to keep scheduled executions going
+                log.warn(e, "Encountered error while gathering Redshift remote database events");
+            }
+        }
+
+        private List<RemoteDatabaseEvent> getRecentQueries()
+        {
+            try (Handle handle = jdbi.open()) {
+                return handle.createQuery("""
+                                SELECT query_text, status, error_message
+                                FROM SYS_QUERY_HISTORY
+                                WHERE database_name = :db_name
+                                AND query_type = 'SELECT'
+                                AND user_id = current_user_id
+                                AND start_time > GETDATE() - INTERVAL '15 minutes'
+                                """)
+                        .bind("db_name", TEST_DATABASE)
+                        .map((rs, _) -> new RemoteDatabaseEvent(
+                                rs.getString("query_text"),
+                                switch (requireNonNull(rs.getString("status"), "status is null").trim()) {
+                                    case "failed" -> Optional.ofNullable(rs.getString("error_message"))
+                                            .flatMap(message -> message.contains(LOG_CANCELLATION_EVENT) ? Optional.of(Status.CANCELLED) : Optional.empty())
+                                            .orElse(Status.DONE);
+                                    case "success" -> Status.DONE;
+                                    case "canceled" -> Status.CANCELLED;
+                                    default -> Status.RUNNING;
+                                }))
+                        .list();
+            }
         }
     }
 }

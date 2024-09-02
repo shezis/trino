@@ -95,14 +95,17 @@ you name the property file `sales.properties`, Trino creates a catalog named
 ```{include} jdbc-domain-compaction-threshold.fragment
 ```
 
-```{include} jdbc-procedures.fragment
-```
-
 ```{include} jdbc-case-insensitive-matching.fragment
 ```
 
 ```{include} non-transactional-insert.fragment
 ```
+
+(oracle-fte-support)=
+### Fault-tolerant execution support
+
+The connector supports {doc}`/admin/fault-tolerant-execution` of query
+processing. Read and write operations are both supported with any retry policy.
 
 ## Querying Oracle
 
@@ -147,7 +150,6 @@ SELECT * FROM example.web.clicks;
 ```
 
 (oracle-type-mapping)=
-
 ## Type mapping
 
 Because Trino and Oracle each support types that the other does not, this
@@ -400,7 +402,6 @@ fails. This is also true for the equivalent `VARCHAR` types.
 :::
 
 (oracle-sql-support)=
-
 ## SQL support
 
 The connector provides read access and write access to data and metadata in
@@ -427,21 +428,20 @@ supports the following statements:
 ```{include} alter-table-limitation.fragment
 ```
 
-(oracle-fte-support)=
+### Procedures
 
-## Fault-tolerant execution support
+```{include} jdbc-procedures-flush.fragment
+```
+```{include} procedures-execute.fragment
+```
 
-The connector supports {doc}`/admin/fault-tolerant-execution` of query
-processing. Read and write operations are both supported with any retry policy.
-
-## Table functions
+### Table functions
 
 The connector provides specific {doc}`table functions </functions/table>` to
 access Oracle.
 
 (oracle-query-function)=
-
-### `query(varchar) -> table`
+#### `query(varchar) -> table`
 
 The `query` function allows you to query the underlying database directly. It
 requires syntax native to Oracle, because the full query is pushed down and
@@ -520,7 +520,6 @@ oracle.synonyms.enabled=true
 ```
 
 (oracle-pushdown)=
-
 ### Pushdown
 
 The connector supports pushdown for a number of operations:
@@ -560,7 +559,6 @@ with the following functions:
 ```
 
 (oracle-predicate-pushdown)=
-
 #### Predicate pushdown support
 
 The connector does not support pushdown of any predicates on columns that use

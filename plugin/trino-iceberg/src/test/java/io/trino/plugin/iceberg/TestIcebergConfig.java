@@ -14,6 +14,7 @@
 package io.trino.plugin.iceberg;
 
 import com.google.common.collect.ImmutableMap;
+import com.google.common.collect.ImmutableSet;
 import io.airlift.units.DataSize;
 import io.airlift.units.Duration;
 import io.trino.plugin.hive.HiveCompressionCodec;
@@ -67,7 +68,10 @@ public class TestIcebergConfig
                 .setRegisterTableProcedureEnabled(false)
                 .setSortedWritingEnabled(true)
                 .setQueryPartitionFilterRequired(false)
-                .setSplitManagerThreads(Runtime.getRuntime().availableProcessors() * 2));
+                .setQueryPartitionFilterRequiredSchemas(ImmutableSet.of())
+                .setSplitManagerThreads(Runtime.getRuntime().availableProcessors() * 2)
+                .setIncrementalRefreshEnabled(true)
+                .setMetadataCacheEnabled(true));
     }
 
     @Test
@@ -98,7 +102,10 @@ public class TestIcebergConfig
                 .put("iceberg.register-table-procedure.enabled", "true")
                 .put("iceberg.sorted-writing-enabled", "false")
                 .put("iceberg.query-partition-filter-required", "true")
+                .put("iceberg.query-partition-filter-required-schemas", "bronze,silver")
                 .put("iceberg.split-manager-threads", "42")
+                .put("iceberg.incremental-refresh-enabled", "false")
+                .put("iceberg.metadata-cache.enabled", "false")
                 .buildOrThrow();
 
         IcebergConfig expected = new IcebergConfig()
@@ -126,7 +133,10 @@ public class TestIcebergConfig
                 .setRegisterTableProcedureEnabled(true)
                 .setSortedWritingEnabled(false)
                 .setQueryPartitionFilterRequired(true)
-                .setSplitManagerThreads(42);
+                .setQueryPartitionFilterRequiredSchemas(ImmutableSet.of("bronze", "silver"))
+                .setSplitManagerThreads(42)
+                .setIncrementalRefreshEnabled(false)
+                .setMetadataCacheEnabled(false);
 
         assertFullMapping(properties, expected);
     }

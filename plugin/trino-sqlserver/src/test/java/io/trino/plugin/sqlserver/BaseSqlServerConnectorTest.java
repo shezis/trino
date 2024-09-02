@@ -50,28 +50,28 @@ public abstract class BaseSqlServerConnectorTest
     {
         return switch (connectorBehavior) {
             case SUPPORTS_JOIN_PUSHDOWN,
-                    SUPPORTS_JOIN_PUSHDOWN_WITH_VARCHAR_EQUALITY,
-                    SUPPORTS_PREDICATE_EXPRESSION_PUSHDOWN,
-                    SUPPORTS_PREDICATE_PUSHDOWN_WITH_VARCHAR_EQUALITY -> true;
+                 SUPPORTS_JOIN_PUSHDOWN_WITH_VARCHAR_EQUALITY,
+                 SUPPORTS_PREDICATE_EXPRESSION_PUSHDOWN,
+                 SUPPORTS_PREDICATE_PUSHDOWN_WITH_VARCHAR_EQUALITY -> true;
             case SUPPORTS_ADD_COLUMN_WITH_COMMENT,
-                    SUPPORTS_AGGREGATION_PUSHDOWN_CORRELATION,
-                    SUPPORTS_AGGREGATION_PUSHDOWN_COUNT_DISTINCT,
-                    SUPPORTS_AGGREGATION_PUSHDOWN_COVARIANCE,
-                    SUPPORTS_AGGREGATION_PUSHDOWN_REGRESSION,
-                    SUPPORTS_ARRAY,
-                    SUPPORTS_COMMENT_ON_COLUMN,
-                    SUPPORTS_COMMENT_ON_TABLE,
-                    SUPPORTS_CREATE_TABLE_WITH_COLUMN_COMMENT,
-                    SUPPORTS_CREATE_TABLE_WITH_TABLE_COMMENT,
-                    SUPPORTS_DROP_NOT_NULL_CONSTRAINT,
-                    SUPPORTS_DROP_SCHEMA_CASCADE,
-                    SUPPORTS_JOIN_PUSHDOWN_WITH_DISTINCT_FROM,
-                    SUPPORTS_NEGATIVE_DATE,
-                    SUPPORTS_PREDICATE_PUSHDOWN_WITH_VARCHAR_INEQUALITY,
-                    SUPPORTS_RENAME_SCHEMA,
-                    SUPPORTS_RENAME_TABLE_ACROSS_SCHEMAS,
-                    SUPPORTS_ROW_TYPE,
-                    SUPPORTS_SET_COLUMN_TYPE -> false;
+                 SUPPORTS_AGGREGATION_PUSHDOWN_CORRELATION,
+                 SUPPORTS_AGGREGATION_PUSHDOWN_COUNT_DISTINCT,
+                 SUPPORTS_AGGREGATION_PUSHDOWN_COVARIANCE,
+                 SUPPORTS_AGGREGATION_PUSHDOWN_REGRESSION,
+                 SUPPORTS_ARRAY,
+                 SUPPORTS_COMMENT_ON_COLUMN,
+                 SUPPORTS_COMMENT_ON_TABLE,
+                 SUPPORTS_CREATE_TABLE_WITH_COLUMN_COMMENT,
+                 SUPPORTS_CREATE_TABLE_WITH_TABLE_COMMENT,
+                 SUPPORTS_DROP_NOT_NULL_CONSTRAINT,
+                 SUPPORTS_DROP_SCHEMA_CASCADE,
+                 SUPPORTS_JOIN_PUSHDOWN_WITH_DISTINCT_FROM,
+                 SUPPORTS_NEGATIVE_DATE,
+                 SUPPORTS_PREDICATE_PUSHDOWN_WITH_VARCHAR_INEQUALITY,
+                 SUPPORTS_RENAME_SCHEMA,
+                 SUPPORTS_RENAME_TABLE_ACROSS_SCHEMAS,
+                 SUPPORTS_ROW_TYPE,
+                 SUPPORTS_SET_COLUMN_TYPE -> false;
             default -> super.hasBehavior(connectorBehavior);
         };
     }
@@ -836,6 +836,47 @@ public abstract class BaseSqlServerConnectorTest
             assertUpdate("UPDATE " + table.getName() + " SET col1 = 20 WHERE col2 != 'A'", 1);
             assertQuery("SELECT * FROM " + table.getName(), "VALUES (20, 'a'), (2, 'A')");
         }
+    }
+
+    @Test
+    void testInvalidTable()
+    {
+        String tableName = "sqlserver.dbo.bogus";
+        assertQueryFails("SELECT * FROM " + tableName, ".* Table '%s' does not exist".formatted(tableName));
+    }
+
+    @Test
+    void testInvalidSchema()
+    {
+        assertQueryFails(
+                "SELECT * FROM sqlserver.does_not_exist.bogus",
+                ".* Schema 'does_not_exist' does not exist");
+    }
+
+    @Test
+    void testNationJoinRegion()
+    {
+        assertQuery(
+                "SELECT c.name, t.name FROM nation c JOIN " +
+                        "tpch.tiny.region t ON c.regionkey = t.regionkey " +
+                        "WHERE c.nationkey = 3",
+                "VALUES ('CANADA', 'AMERICA')");
+    }
+
+    @Test
+    void testNationSelfInnerJoin()
+    {
+        assertQuery(
+                "SELECT n1.name, n2.regionkey FROM nation n1 JOIN " +
+                        "nation n2 ON n1.nationkey = n2.regionkey " +
+                        "WHERE n1.nationkey = 3",
+                "VALUES ('CANADA', 3), ('CANADA', 3), ('CANADA', 3), ('CANADA', 3), ('CANADA', 3)");
+    }
+
+    @Test
+    void testInvalidColumn()
+    {
+        assertQueryFails("SELECT bogus FROM nation", ".* Column 'bogus' cannot be resolved");
     }
 
     private TestProcedure createTestingProcedure(String baseQuery)

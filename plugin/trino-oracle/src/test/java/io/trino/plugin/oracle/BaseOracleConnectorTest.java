@@ -48,17 +48,17 @@ public abstract class BaseOracleConnectorTest
         return switch (connectorBehavior) {
             case SUPPORTS_JOIN_PUSHDOWN -> true;
             case SUPPORTS_ADD_COLUMN_WITH_COMMENT,
-                    SUPPORTS_AGGREGATION_PUSHDOWN_CORRELATION,
-                    SUPPORTS_AGGREGATION_PUSHDOWN_REGRESSION,
-                    SUPPORTS_ARRAY,
-                    SUPPORTS_CREATE_SCHEMA,
-                    SUPPORTS_CREATE_TABLE_WITH_COLUMN_COMMENT,
-                    SUPPORTS_DROP_NOT_NULL_CONSTRAINT,
-                    SUPPORTS_JOIN_PUSHDOWN_WITH_DISTINCT_FROM,
-                    SUPPORTS_RENAME_TABLE_ACROSS_SCHEMAS,
-                    SUPPORTS_ROW_TYPE,
-                    SUPPORTS_SET_COLUMN_TYPE,
-                    SUPPORTS_TOPN_PUSHDOWN -> false;
+                 SUPPORTS_AGGREGATION_PUSHDOWN_CORRELATION,
+                 SUPPORTS_AGGREGATION_PUSHDOWN_REGRESSION,
+                 SUPPORTS_ARRAY,
+                 SUPPORTS_CREATE_SCHEMA,
+                 SUPPORTS_CREATE_TABLE_WITH_COLUMN_COMMENT,
+                 SUPPORTS_DROP_NOT_NULL_CONSTRAINT,
+                 SUPPORTS_JOIN_PUSHDOWN_WITH_DISTINCT_FROM,
+                 SUPPORTS_RENAME_TABLE_ACROSS_SCHEMAS,
+                 SUPPORTS_ROW_TYPE,
+                 SUPPORTS_SET_COLUMN_TYPE,
+                 SUPPORTS_TOPN_PUSHDOWN -> false;
             default -> super.hasBehavior(connectorBehavior);
         };
     }
@@ -426,20 +426,20 @@ public abstract class BaseOracleConnectorTest
     @Override
     protected String errorMessageForInsertIntoNotNullColumn(String columnName)
     {
-        return format("ORA-01400: cannot insert NULL into \\(.*\"%s\"\\)\n", columnName.toUpperCase(ENGLISH));
+        return format("ORA-01400: cannot insert NULL into \\(.*\"%s\"\\)\n\nhttps://docs.oracle.com/error-help/db/ora-01400/", columnName.toUpperCase(ENGLISH));
     }
 
     @Override
     protected void verifyAddNotNullColumnToNonEmptyTableFailurePermissible(Throwable e)
     {
-        assertThat(e).hasMessage("ORA-01758: table must be empty to add mandatory (NOT NULL) column\n");
+        assertThat(e).hasMessageContaining("ORA-01758: table must be empty to add mandatory (NOT NULL) column");
     }
 
     @Override
     protected void verifyConcurrentAddColumnFailurePermissible(Exception e)
     {
         assertThat(e)
-                .hasMessage("ORA-14411: The DDL cannot be run concurrently with other DDLs\n");
+                .hasMessageContaining("ORA-14411: The DDL cannot be run concurrently with other DDLs");
     }
 
     @Override
@@ -451,7 +451,7 @@ public abstract class BaseOracleConnectorTest
     @Override
     protected void verifySchemaNameLengthFailurePermissible(Throwable e)
     {
-        assertThat(e).hasMessage("ORA-00972: identifier is too long\n");
+        assertThat(e).hasMessageContaining("ORA-00972: identifier is too long");
     }
 
     @Override
@@ -463,7 +463,7 @@ public abstract class BaseOracleConnectorTest
     @Override
     protected void verifyTableNameLengthFailurePermissible(Throwable e)
     {
-        assertThat(e).hasMessage("ORA-00972: identifier is too long\n");
+        assertThat(e).hasMessageContaining("ORA-00972: identifier is too long");
     }
 
     @Override
@@ -475,7 +475,7 @@ public abstract class BaseOracleConnectorTest
     @Override
     protected void verifyColumnNameLengthFailurePermissible(Throwable e)
     {
-        assertThat(e).hasMessage("ORA-00972: identifier is too long\n");
+        assertThat(e).hasMessageContaining("ORA-00972: identifier is too long");
     }
 
     @Override

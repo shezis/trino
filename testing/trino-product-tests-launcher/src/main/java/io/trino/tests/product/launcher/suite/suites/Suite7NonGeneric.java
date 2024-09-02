@@ -17,7 +17,9 @@ import com.google.common.collect.ImmutableList;
 import io.trino.tests.product.launcher.env.EnvironmentConfig;
 import io.trino.tests.product.launcher.env.EnvironmentDefaults;
 import io.trino.tests.product.launcher.env.environment.EnvMultinodeKerberosKudu;
+import io.trino.tests.product.launcher.env.environment.EnvMultinodeMinioDataLakeTaskRetriesFilesystem;
 import io.trino.tests.product.launcher.env.environment.EnvMultinodePostgresql;
+import io.trino.tests.product.launcher.env.environment.EnvMultinodeSecretsProvider;
 import io.trino.tests.product.launcher.env.environment.EnvMultinodeSqlserver;
 import io.trino.tests.product.launcher.env.environment.EnvSinglenodeKerberosHdfsImpersonationCrossRealm;
 import io.trino.tests.product.launcher.env.environment.EnvSinglenodeSparkHive;
@@ -32,6 +34,7 @@ import java.util.List;
 import static com.google.common.base.Verify.verify;
 import static io.trino.tests.product.TestGroups.CLI;
 import static io.trino.tests.product.TestGroups.CONFIGURED_FEATURES;
+import static io.trino.tests.product.TestGroups.FAULT_TOLERANT;
 import static io.trino.tests.product.TestGroups.HDFS_IMPERSONATION;
 import static io.trino.tests.product.TestGroups.HIVE_KERBEROS;
 import static io.trino.tests.product.TestGroups.HIVE_SPARK;
@@ -55,6 +58,9 @@ public class Suite7NonGeneric
                 testOnEnvironment(EnvMultinodePostgresql.class)
                         .withGroups(CONFIGURED_FEATURES, POSTGRESQL)
                         .build(),
+                testOnEnvironment(EnvMultinodeSecretsProvider.class)
+                        .withGroups(CONFIGURED_FEATURES, POSTGRESQL)
+                        .build(),
                 testOnEnvironment(EnvMultinodeSqlserver.class)
                         .withGroups(CONFIGURED_FEATURES, SQLSERVER)
                         .build(),
@@ -75,6 +81,9 @@ public class Suite7NonGeneric
                         .build(),
                 testOnEnvironment(EnvTwoKerberosHives.class)
                         .withGroups(CONFIGURED_FEATURES, TWO_HIVES)
+                        .build(),
+                testOnEnvironment(EnvMultinodeMinioDataLakeTaskRetriesFilesystem.class)
+                        .withGroups(FAULT_TOLERANT)
                         .build());
     }
 }

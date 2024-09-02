@@ -47,8 +47,6 @@ public class TestDeltaLakeConfig
                 .setDomainCompactionThreshold(1000)
                 .setMaxSplitsPerSecond(Integer.MAX_VALUE)
                 .setMaxOutstandingSplits(1_000)
-                .setMaxInitialSplits(200)
-                .setMaxInitialSplitSize(DataSize.of(32, DataSize.Unit.MEGABYTE))
                 .setMaxSplitSize(DataSize.of(64, DataSize.Unit.MEGABYTE))
                 .setMinimumAssignedSplitWeight(0.05)
                 .setMaxPartitionsPerWriter(100)
@@ -66,12 +64,15 @@ public class TestDeltaLakeConfig
                 .setDeleteSchemaLocationsFallback(false)
                 .setParquetTimeZone(TimeZone.getDefault().getID())
                 .setPerTransactionMetastoreCacheMaximumSize(1000)
+                .setStoreTableMetadataEnabled(false)
+                .setStoreTableMetadataThreads(5)
                 .setTargetMaxFileSize(DataSize.of(1, GIGABYTE))
                 .setIdleWriterMinFileSize(DataSize.of(16, MEGABYTE))
                 .setUniqueTableLocation(true)
                 .setRegisterTableProcedureEnabled(false)
                 .setProjectionPushdownEnabled(true)
-                .setQueryPartitionFilterRequired(false));
+                .setQueryPartitionFilterRequired(false)
+                .setDeletionVectorsEnabled(false));
     }
 
     @Test
@@ -85,8 +86,6 @@ public class TestDeltaLakeConfig
                 .put("delta.domain-compaction-threshold", "500")
                 .put("delta.max-outstanding-splits", "200")
                 .put("delta.max-splits-per-second", "10")
-                .put("delta.max-initial-splits", "5")
-                .put("delta.max-initial-split-size", "1 GB")
                 .put("delta.max-split-size", "10 MB")
                 .put("delta.minimum-assigned-split-weight", "0.01")
                 .put("delta.max-partitions-per-writer", "200")
@@ -103,6 +102,8 @@ public class TestDeltaLakeConfig
                 .put("delta.compression-codec", "GZIP")
                 .put("delta.per-transaction-metastore-cache-maximum-size", "500")
                 .put("delta.delete-schema-locations-fallback", "true")
+                .put("delta.metastore.store-table-metadata", "true")
+                .put("delta.metastore.store-table-metadata-threads", "1")
                 .put("delta.parquet.time-zone", nonDefaultTimeZone().getID())
                 .put("delta.target-max-file-size", "2 GB")
                 .put("delta.idle-writer-min-file-size", "1MB")
@@ -110,6 +111,7 @@ public class TestDeltaLakeConfig
                 .put("delta.register-table-procedure.enabled", "true")
                 .put("delta.projection-pushdown-enabled", "false")
                 .put("delta.query-partition-filter-required", "true")
+                .put("delta.deletion-vectors-enabled", "true")
                 .buildOrThrow();
 
         DeltaLakeConfig expected = new DeltaLakeConfig()
@@ -120,8 +122,6 @@ public class TestDeltaLakeConfig
                 .setDomainCompactionThreshold(500)
                 .setMaxOutstandingSplits(200)
                 .setMaxSplitsPerSecond(10)
-                .setMaxInitialSplits(5)
-                .setMaxInitialSplitSize(DataSize.of(1, GIGABYTE))
                 .setMaxSplitSize(DataSize.of(10, DataSize.Unit.MEGABYTE))
                 .setMinimumAssignedSplitWeight(0.01)
                 .setMaxPartitionsPerWriter(200)
@@ -139,12 +139,15 @@ public class TestDeltaLakeConfig
                 .setDeleteSchemaLocationsFallback(true)
                 .setParquetTimeZone(nonDefaultTimeZone().getID())
                 .setPerTransactionMetastoreCacheMaximumSize(500)
+                .setStoreTableMetadataEnabled(true)
+                .setStoreTableMetadataThreads(1)
                 .setTargetMaxFileSize(DataSize.of(2, GIGABYTE))
                 .setIdleWriterMinFileSize(DataSize.of(1, MEGABYTE))
                 .setUniqueTableLocation(false)
                 .setRegisterTableProcedureEnabled(true)
                 .setProjectionPushdownEnabled(false)
-                .setQueryPartitionFilterRequired(true);
+                .setQueryPartitionFilterRequired(true)
+                .setDeletionVectorsEnabled(true);
 
         assertFullMapping(properties, expected);
     }

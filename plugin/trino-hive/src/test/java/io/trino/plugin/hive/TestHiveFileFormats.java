@@ -25,6 +25,7 @@ import io.trino.filesystem.TrinoFileSystemFactory;
 import io.trino.filesystem.memory.MemoryFileSystemFactory;
 import io.trino.hive.formats.compression.CompressionKind;
 import io.trino.hive.orc.OrcConf;
+import io.trino.metastore.HiveType;
 import io.trino.orc.OrcReaderOptions;
 import io.trino.orc.OrcWriterOptions;
 import io.trino.plugin.base.type.DecodedTimestamp;
@@ -40,7 +41,6 @@ import io.trino.plugin.hive.line.SimpleSequenceFilePageSourceFactory;
 import io.trino.plugin.hive.line.SimpleSequenceFileWriterFactory;
 import io.trino.plugin.hive.line.SimpleTextFilePageSourceFactory;
 import io.trino.plugin.hive.line.SimpleTextFileWriterFactory;
-import io.trino.plugin.hive.metastore.StorageFormat;
 import io.trino.plugin.hive.orc.OrcFileWriterFactory;
 import io.trino.plugin.hive.orc.OrcPageSourceFactory;
 import io.trino.plugin.hive.orc.OrcReaderConfig;
@@ -50,6 +50,7 @@ import io.trino.plugin.hive.parquet.ParquetPageSourceFactory;
 import io.trino.plugin.hive.parquet.ParquetReaderConfig;
 import io.trino.plugin.hive.parquet.ParquetWriterConfig;
 import io.trino.plugin.hive.rcfile.RcFilePageSourceFactory;
+import io.trino.plugin.hive.util.HiveTypeTranslator;
 import io.trino.spi.Page;
 import io.trino.spi.PageBuilder;
 import io.trino.spi.block.ArrayBlockBuilder;
@@ -151,6 +152,7 @@ import static io.trino.plugin.hive.HiveTestUtils.SESSION;
 import static io.trino.plugin.hive.HiveTestUtils.getHiveSession;
 import static io.trino.plugin.hive.HiveTestUtils.mapType;
 import static io.trino.plugin.hive.acid.AcidTransaction.NO_ACID_TRANSACTION;
+import static io.trino.plugin.hive.util.HiveTypeTranslator.toHiveType;
 import static io.trino.plugin.hive.util.SerdeConstants.LIST_COLUMNS;
 import static io.trino.plugin.hive.util.SerdeConstants.LIST_COLUMN_TYPES;
 import static io.trino.plugin.hive.util.SerdeConstants.SERIALIZATION_LIB;
@@ -610,6 +612,24 @@ public final class TestHiveFileFormats
                 .isReadableByPageSource(fileSystemFactory -> new ParquetPageSourceFactory(fileSystemFactory, STATS, new ParquetReaderConfig(), new HiveConfig()));
     }
 
+    @Test(dataProvider = "rowCount")
+    public void testParquetCaseSensitivity(int rowCount)
+            throws Exception
+    {
+        TestColumn writeColumnA = new TestColumn("UPPER_CASE_COLUMN", createVarcharType(5), new HiveVarchar("testA", 5), utf8Slice("testA"));
+        TestColumn writeColumnB = new TestColumn("Upper_Case_Column", createVarcharType(5), new HiveVarchar("testB", 5), utf8Slice("testB"));
+        TestColumn readColumn = new TestColumn("uppeR_casE_columN", createVarcharType(5), new HiveVarchar("testA", 5), utf8Slice("testA"));
+        assertThatFileFormat(PARQUET)
+                .withWriteColumns(ImmutableList.of(writeColumnA, writeColumnB))
+                .withReadColumns(ImmutableList.of(readColumn))
+                // Parquet writer validation will attempt to read back all written columns, while the reader is case-insensitive and does not support reading all columns for this case.
+                // Since this is not a valid scenario for Trino parquet writer, we disable parquet writer validation to avoid test failures
+                .withSession(getHiveSession(createParquetHiveConfig(true), new ParquetWriterConfig().setValidationPercentage(0)))
+                .withRowsCount(rowCount)
+                .withFileWriterFactory(fileSystemFactory -> new ParquetFileWriterFactory(fileSystemFactory, new NodeVersion("test-version"), TESTING_TYPE_MANAGER, new HiveConfig(), STATS))
+                .isReadableByPageSource(fileSystemFactory -> new ParquetPageSourceFactory(fileSystemFactory, STATS, new ParquetReaderConfig(), new HiveConfig()));
+    }
+
     private static List<TestColumn> getTestColumnsSupportedByParquet()
     {
         // Write of complex hive data to Parquet is broken
@@ -948,7 +968,7 @@ public final class TestHiveFileFormats
             if (!baseColumnNames.contains(name) && !testReadColumn.partitionKey()) {
                 baseColumnNames.add(name);
                 splitPropertiesColumnNames.add(name);
-                splitPropertiesColumnTypes.add(HiveType.toHiveType(testReadColumn.baseType()).toString());
+                splitPropertiesColumnTypes.add(toHiveType(testReadColumn.baseType()).toString());
             }
         }
 
@@ -965,7 +985,7 @@ public final class TestHiveFileFormats
                 .collect(toList());
 
         String partitionName = String.join("/", partitionKeys.stream()
-                .map(partitionKey -> format("%s=%s", partitionKey.getName(), partitionKey.getValue()))
+                .map(partitionKey -> format("%s=%s", partitionKey.name(), partitionKey.value()))
                 .collect(toImmutableList()));
 
         List<HivePageSourceProvider.ColumnMapping> columnMappings = buildColumnMappings(
@@ -1309,7 +1329,7 @@ public final class TestHiveFileFormats
                     try {
                         fileSystem.deleteFile(location);
                     }
-                    catch (IOException ignored) {
+                    catch (IOException _) {
                     }
                 }
             }
@@ -1347,7 +1367,7 @@ public final class TestHiveFileFormats
 
         Map<String, String> tableProperties = ImmutableMap.<String, String>builder()
                 .put(LIST_COLUMNS, testColumns.stream().map(TestColumn::name).collect(Collectors.joining(",")))
-                .put(LIST_COLUMN_TYPES, testColumns.stream().map(TestColumn::type).map(HiveType::toHiveType).map(HiveType::toString).collect(Collectors.joining(",")))
+                .put(LIST_COLUMN_TYPES, testColumns.stream().map(TestColumn::type).map(HiveTypeTranslator::toHiveType).map(HiveType::toString).collect(Collectors.joining(",")))
                 .buildOrThrow();
 
         Optional<FileWriter> fileWriter = fileWriterFactory.createFileWriter(
@@ -1355,7 +1375,7 @@ public final class TestHiveFileFormats
                 testColumns.stream()
                         .map(TestColumn::name)
                         .collect(toList()),
-                StorageFormat.fromHiveStorageFormat(storageFormat),
+                storageFormat.toStorageFormat(),
                 compressionCodec,
                 tableProperties,
                 session,
@@ -1407,7 +1427,7 @@ public final class TestHiveFileFormats
             if (object instanceof HiveChar) {
                 object = ((HiveChar) object).getValue();
             }
-            charType.writeSlice(builder, truncateToLengthAndTrimSpaces(utf8Slice((String) object), ((CharType) type).getLength()));
+            charType.writeSlice(builder, truncateToLengthAndTrimSpaces(utf8Slice((String) object), charType.getLength()));
         }
         else if (type == DATE) {
             long days = ((Date) object).toEpochDay();
@@ -1489,14 +1509,14 @@ public final class TestHiveFileFormats
 
         Properties tableProperties = new Properties();
         tableProperties.setProperty(LIST_COLUMNS, testColumns.stream().map(TestColumn::name).collect(Collectors.joining(",")));
-        tableProperties.setProperty(LIST_COLUMN_TYPES, testColumns.stream().map(testColumn -> HiveType.toHiveType(testColumn.type()).toString()).collect(Collectors.joining(",")));
+        tableProperties.setProperty(LIST_COLUMN_TYPES, testColumns.stream().map(testColumn -> toHiveType(testColumn.type()).toString()).collect(Collectors.joining(",")));
         serializer.initialize(new Configuration(false), tableProperties);
 
         JobConf jobConf = new JobConf(false);
         configureCompression(jobConf, compressionCodec);
 
         File file = File.createTempFile("trino_test", "data");
-        file.delete();
+        verify(file.delete());
         try {
             FileSinkOperator.RecordWriter recordWriter = outputFormat.getHiveRecordWriter(
                     jobConf,
@@ -1538,7 +1558,7 @@ public final class TestHiveFileFormats
             }
         }
         finally {
-            file.delete();
+            verify(file.delete());
         }
     }
 
@@ -1992,15 +2012,15 @@ public final class TestHiveFileFormats
             checkArgument(partitionKey == (columnIndex == -1));
 
             if (!dereference) {
-                return createBaseColumn(name, columnIndex, HiveType.toHiveType(type), type, partitionKey ? PARTITION_KEY : REGULAR, Optional.empty());
+                return createBaseColumn(name, columnIndex, toHiveType(type), type, partitionKey ? PARTITION_KEY : REGULAR, Optional.empty());
             }
 
             return new HiveColumnHandle(
                     baseName,
                     columnIndex,
-                    HiveType.toHiveType(baseType),
+                    toHiveType(baseType),
                     baseType,
-                    Optional.of(new HiveColumnProjectionInfo(ImmutableList.of(0), ImmutableList.of(name), HiveType.toHiveType(type), type)),
+                    Optional.of(new HiveColumnProjectionInfo(ImmutableList.of(0), ImmutableList.of(name), toHiveType(type), type)),
                     partitionKey ? PARTITION_KEY : REGULAR,
                     Optional.empty());
         }

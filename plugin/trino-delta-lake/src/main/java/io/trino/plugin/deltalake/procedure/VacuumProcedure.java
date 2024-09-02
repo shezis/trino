@@ -24,7 +24,6 @@ import io.trino.filesystem.FileIterator;
 import io.trino.filesystem.Location;
 import io.trino.filesystem.TrinoFileSystem;
 import io.trino.filesystem.TrinoFileSystemFactory;
-import io.trino.plugin.base.CatalogName;
 import io.trino.plugin.base.util.UncheckedCloseable;
 import io.trino.plugin.deltalake.DeltaLakeConfig;
 import io.trino.plugin.deltalake.DeltaLakeMetadata;
@@ -38,11 +37,13 @@ import io.trino.plugin.deltalake.transactionlog.RemoveFileEntry;
 import io.trino.plugin.deltalake.transactionlog.TableSnapshot;
 import io.trino.plugin.deltalake.transactionlog.TransactionLogAccess;
 import io.trino.spi.TrinoException;
+import io.trino.spi.catalog.CatalogName;
 import io.trino.spi.classloader.ThreadContextClassLoader;
 import io.trino.spi.connector.ConnectorAccessControl;
 import io.trino.spi.connector.ConnectorSession;
 import io.trino.spi.connector.ConnectorTableHandle;
 import io.trino.spi.connector.SchemaTableName;
+import io.trino.spi.predicate.TupleDomain;
 import io.trino.spi.procedure.Procedure;
 import io.trino.spi.procedure.Procedure.Argument;
 
@@ -52,16 +53,20 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.Set;
 import java.util.stream.Stream;
 
 import static com.google.common.base.Preconditions.checkState;
+import static com.google.common.base.Predicates.alwaysFalse;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.collect.ImmutableSet.toImmutableSet;
 import static io.trino.plugin.base.util.Procedures.checkProcedureArgument;
 import static io.trino.plugin.deltalake.DeltaLakeMetadata.MAX_WRITER_VERSION;
+import static io.trino.plugin.deltalake.DeltaLakeMetadata.checkUnsupportedUniversalFormat;
 import static io.trino.plugin.deltalake.DeltaLakeMetadata.checkValidTableHandle;
 import static io.trino.plugin.deltalake.DeltaLakeSessionProperties.getVacuumMinRetention;
+import static io.trino.plugin.deltalake.transactionlog.DeltaLakeSchemaSupport.DELETION_VECTORS_FEATURE_NAME;
 import static io.trino.plugin.deltalake.transactionlog.DeltaLakeSchemaSupport.unsupportedWriterFeatures;
 import static io.trino.plugin.deltalake.transactionlog.TransactionLogUtil.TRANSACTION_LOG_DIRECTORY;
 import static io.trino.plugin.deltalake.transactionlog.TransactionLogUtil.getTransactionLogDir;
@@ -128,7 +133,7 @@ public class VacuumProcedure
             String table,
             String retention)
     {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(getClass().getClassLoader())) {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(getClass().getClassLoader())) {
             doVacuum(session, accessControl, schema, table, retention);
         }
         catch (TrinoException e) {
@@ -172,21 +177,28 @@ public class VacuumProcedure
         metadata.beginQuery(session);
         try (UncheckedCloseable ignore = () -> metadata.cleanupQuery(session)) {
             SchemaTableName tableName = new SchemaTableName(schema, table);
-            ConnectorTableHandle connectorTableHandle = metadata.getTableHandle(session, tableName);
+            ConnectorTableHandle connectorTableHandle = metadata.getTableHandle(session, tableName, Optional.empty(), Optional.empty());
             checkProcedureArgument(connectorTableHandle != null, "Table '%s' does not exist", tableName);
             DeltaLakeTableHandle handle = checkValidTableHandle(connectorTableHandle);
 
             accessControl.checkCanInsertIntoTable(null, tableName);
             accessControl.checkCanDeleteFromTable(null, tableName);
 
-            TableSnapshot tableSnapshot = metadata.getSnapshot(session, tableName, handle.getLocation(), handle.getReadVersion());
+            checkUnsupportedUniversalFormat(handle.getMetadataEntry());
+
+            TableSnapshot tableSnapshot = metadata.getSnapshot(session, tableName, handle.getLocation(), Optional.of(handle.getReadVersion()));
             ProtocolEntry protocolEntry = transactionLogAccess.getProtocolEntry(session, tableSnapshot);
-            if (protocolEntry.getMinWriterVersion() > MAX_WRITER_VERSION) {
-                throw new TrinoException(NOT_SUPPORTED, "Cannot execute vacuum procedure with %d writer version".formatted(protocolEntry.getMinWriterVersion()));
+            if (protocolEntry.minWriterVersion() > MAX_WRITER_VERSION) {
+                throw new TrinoException(NOT_SUPPORTED, "Cannot execute vacuum procedure with %d writer version".formatted(protocolEntry.minWriterVersion()));
             }
-            Set<String> unsupportedWriterFeatures = unsupportedWriterFeatures(protocolEntry.getWriterFeatures().orElse(ImmutableSet.of()));
+            Set<String> writerFeatures = protocolEntry.writerFeatures().orElse(ImmutableSet.of());
+            Set<String> unsupportedWriterFeatures = unsupportedWriterFeatures(protocolEntry.writerFeatures().orElse(ImmutableSet.of()));
             if (!unsupportedWriterFeatures.isEmpty()) {
                 throw new TrinoException(NOT_SUPPORTED, "Cannot execute vacuum procedure with %s writer features".formatted(unsupportedWriterFeatures));
+            }
+            if (writerFeatures.contains(DELETION_VECTORS_FEATURE_NAME)) {
+                // TODO https://github.com/trinodb/trino/issues/22809 Add support for vacuuming tables with deletion vectors
+                throw new TrinoException(NOT_SUPPORTED, "Cannot execute vacuum procedure with %s writer features".formatted(DELETION_VECTORS_FEATURE_NAME));
             }
 
             String tableLocation = tableSnapshot.getTableLocation();
@@ -200,9 +212,16 @@ public class VacuumProcedure
             List<Long> recentVersions = transactionLogAccess.getPastTableVersions(fileSystem, transactionLogDir, threshold, tableSnapshot.getVersion());
             Set<String> retainedPaths;
             try (Stream<AddFileEntry> activeAddEntries = transactionLogAccess.getActiveFiles(
-                    tableSnapshot, handle.getMetadataEntry(), handle.getProtocolEntry(), session)) {
+                    session,
+                    tableSnapshot,
+                    handle.getMetadataEntry(),
+                    handle.getProtocolEntry(),
+                    TupleDomain.all(),
+                    alwaysFalse())) {
                 retainedPaths = Stream.concat(
                                 activeAddEntries
+                                        // paths can be absolute as well in case of shallow-cloned tables, and they shouldn't be deleted as part of vacuum because according to
+                                        // delta-protocol absolute paths are inherited from base table and the vacuum procedure should only list and delete local file references
                                         .map(AddFileEntry::getPath),
                                 transactionLogAccess.getJsonEntries(
                                                 fileSystem,
@@ -214,7 +233,7 @@ public class VacuumProcedure
                                                         .collect(toImmutableList()))
                                         .map(DeltaLakeTransactionLogEntry::getRemove)
                                         .filter(Objects::nonNull)
-                                        .map(RemoveFileEntry::getPath))
+                                        .map(RemoveFileEntry::path))
                         .peek(path -> checkState(!path.startsWith(tableLocation), "Unexpected absolute path in transaction log: %s", path))
                         .collect(toImmutableSet());
             }

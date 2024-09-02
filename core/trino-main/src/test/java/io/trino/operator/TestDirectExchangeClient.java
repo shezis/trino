@@ -19,6 +19,7 @@ import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.ListMultimap;
 import com.google.common.util.concurrent.Futures;
 import com.google.common.util.concurrent.ListenableFuture;
+import io.airlift.configuration.secrets.SecretsResolver;
 import io.airlift.http.client.HttpStatus;
 import io.airlift.http.client.Request;
 import io.airlift.http.client.Response;
@@ -492,7 +493,7 @@ public class TestDirectExchangeClient
                 scheduler,
                 DataSize.of(1, Unit.MEGABYTE),
                 RetryPolicy.QUERY,
-                new ExchangeManagerRegistry(OpenTelemetry.noop(), Tracing.noopTracer()),
+                new ExchangeManagerRegistry(OpenTelemetry.noop(), Tracing.noopTracer(), new SecretsResolver(ImmutableMap.of())),
                 new QueryId("query"),
                 Span.getInvalid(),
                 createRandomExchangeId());
@@ -553,7 +554,7 @@ public class TestDirectExchangeClient
                         scheduler,
                         DataSize.of(1, Unit.KILOBYTE),
                         RetryPolicy.QUERY,
-                        new ExchangeManagerRegistry(OpenTelemetry.noop(), Tracing.noopTracer()),
+                        new ExchangeManagerRegistry(OpenTelemetry.noop(), Tracing.noopTracer(), new SecretsResolver(ImmutableMap.of())),
                         new QueryId("query"),
                         Span.getInvalid(),
                         createRandomExchangeId()),
@@ -1115,7 +1116,7 @@ public class TestDirectExchangeClient
 
     private static Slice getNextPage(DirectExchangeClient exchangeClient)
     {
-        ListenableFuture<Slice> futurePage = Futures.transform(exchangeClient.isBlocked(), ignored -> exchangeClient.isFinished() ? null : exchangeClient.pollPage(), directExecutor());
+        ListenableFuture<Slice> futurePage = Futures.transform(exchangeClient.isBlocked(), _ -> exchangeClient.isFinished() ? null : exchangeClient.pollPage(), directExecutor());
         return tryGetFutureValue(futurePage, 100, TimeUnit.SECONDS).orElse(null);
     }
 

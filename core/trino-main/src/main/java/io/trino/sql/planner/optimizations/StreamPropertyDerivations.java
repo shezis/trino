@@ -26,10 +26,10 @@ import io.trino.metadata.TableProperties;
 import io.trino.spi.connector.ColumnHandle;
 import io.trino.spi.connector.LocalProperty;
 import io.trino.sql.PlannerContext;
-import io.trino.sql.planner.IrTypeAnalyzer;
+import io.trino.sql.ir.Expression;
+import io.trino.sql.ir.Reference;
 import io.trino.sql.planner.Partitioning.ArgumentBinding;
 import io.trino.sql.planner.Symbol;
-import io.trino.sql.planner.TypeProvider;
 import io.trino.sql.planner.plan.AggregationNode;
 import io.trino.sql.planner.plan.ApplyNode;
 import io.trino.sql.planner.plan.AssignUniqueId;
@@ -54,6 +54,7 @@ import io.trino.sql.planner.plan.PlanNode;
 import io.trino.sql.planner.plan.PlanVisitor;
 import io.trino.sql.planner.plan.ProjectNode;
 import io.trino.sql.planner.plan.RefreshMaterializedViewNode;
+import io.trino.sql.planner.plan.RemoteSourceNode;
 import io.trino.sql.planner.plan.RowNumberNode;
 import io.trino.sql.planner.plan.SampleNode;
 import io.trino.sql.planner.plan.SemiJoinNode;
@@ -75,8 +76,6 @@ import io.trino.sql.planner.plan.UnionNode;
 import io.trino.sql.planner.plan.UnnestNode;
 import io.trino.sql.planner.plan.ValuesNode;
 import io.trino.sql.planner.plan.WindowNode;
-import io.trino.sql.tree.Expression;
-import io.trino.sql.tree.SymbolReference;
 
 import java.util.HashMap;
 import java.util.HashSet;
@@ -113,41 +112,33 @@ public final class StreamPropertyDerivations
     public static StreamProperties derivePropertiesRecursively(
             PlanNode node,
             PlannerContext plannerContext,
-            Session session,
-            TypeProvider types,
-            IrTypeAnalyzer typeAnalyzer)
+            Session session)
     {
         List<StreamProperties> inputProperties = node.getSources().stream()
-                .map(source -> derivePropertiesRecursively(source, plannerContext, session, types, typeAnalyzer))
+                .map(source -> derivePropertiesRecursively(source, plannerContext, session))
                 .collect(toImmutableList());
-        return deriveProperties(node, inputProperties, plannerContext, session, types, typeAnalyzer);
+        return deriveProperties(node, inputProperties, plannerContext, session);
     }
 
     public static StreamProperties deriveProperties(
             PlanNode node,
             StreamProperties inputProperties,
             PlannerContext plannerContext,
-            Session session,
-            TypeProvider types,
-            IrTypeAnalyzer typeAnalyzer)
+            Session session)
     {
-        return deriveProperties(node, ImmutableList.of(inputProperties), plannerContext, session, types, typeAnalyzer);
+        return deriveProperties(node, ImmutableList.of(inputProperties), plannerContext, session);
     }
 
     public static StreamProperties deriveProperties(
             PlanNode node,
             List<StreamProperties> inputProperties,
             PlannerContext plannerContext,
-            Session session,
-            TypeProvider types,
-            IrTypeAnalyzer typeAnalyzer)
+            Session session)
     {
         requireNonNull(node, "node is null");
         requireNonNull(inputProperties, "inputProperties is null");
         requireNonNull(plannerContext, "plannerContext is null");
         requireNonNull(session, "session is null");
-        requireNonNull(types, "types is null");
-        requireNonNull(typeAnalyzer, "typeAnalyzer is null");
 
         // properties.otherActualProperties will never be null here because the only way
         // an external caller should obtain StreamProperties is from this method, and the
@@ -158,9 +149,7 @@ public final class StreamPropertyDerivations
                         .map(properties -> properties.otherActualProperties)
                         .collect(toImmutableList()),
                 plannerContext,
-                session,
-                types,
-                typeAnalyzer);
+                session);
 
         StreamProperties result = deriveStreamPropertiesWithoutActualProperties(node, inputProperties, plannerContext.getMetadata(), session)
                 .withOtherActualProperties(otherProperties);
@@ -208,7 +197,7 @@ public final class StreamPropertyDerivations
         return deriveStreamPropertiesWithoutActualProperties(node, inputProperties, metadata, session);
     }
 
-    private static StreamProperties deriveStreamPropertiesWithoutActualProperties(PlanNode node, List<StreamProperties> inputProperties, Metadata metadata, Session session)
+    public static StreamProperties deriveStreamPropertiesWithoutActualProperties(PlanNode node, List<StreamProperties> inputProperties, Metadata metadata, Session session)
     {
         StreamProperties result = node.accept(new Visitor(metadata, session), inputProperties);
 
@@ -333,10 +322,10 @@ public final class StreamPropertyDerivations
                     .forEach(entry -> constants.add(entry.getKey()));
 
             Optional<Set<Symbol>> partitioningSymbols = layout.getTablePartitioning().flatMap(partitioning -> {
-                if (!partitioning.isSingleSplitPerPartition()) {
+                if (!partitioning.singleSplitPerPartition()) {
                     return Optional.empty();
                 }
-                Optional<Set<Symbol>> symbols = getNonConstantSymbols(partitioning.getPartitioningColumns(), assignments, constants);
+                Optional<Set<Symbol>> symbols = getNonConstantSymbols(partitioning.partitioningColumns(), assignments, constants);
                 // if we are partitioned on empty set, we must say multiple of unknown partitioning, because
                 // the connector does not guarantee a single split in this case (since it might not understand
                 // that the value is a constant).
@@ -394,6 +383,18 @@ public final class StreamPropertyDerivations
             };
         }
 
+        @Override
+        public StreamProperties visitRemoteSource(RemoteSourceNode node, List<StreamProperties> context)
+        {
+            if (node.getOrderingScheme().isPresent()) {
+                return StreamProperties.ordered();
+            }
+
+            // TODO: correctly determine if stream is parallelised
+            //  based on session properties
+            return StreamProperties.fixedStreams();
+        }
+
         //
         // Nodes that rewrite and/or drop symbols
         //
@@ -412,7 +413,7 @@ public final class StreamPropertyDerivations
         {
             Map<Symbol, Symbol> inputToOutput = new HashMap<>();
             for (Map.Entry<Symbol, Expression> assignment : assignments.entrySet()) {
-                if (assignment.getValue() instanceof SymbolReference) {
+                if (assignment.getValue() instanceof Reference) {
                     inputToOutput.put(Symbol.from(assignment.getValue()), assignment.getKey());
                 }
             }

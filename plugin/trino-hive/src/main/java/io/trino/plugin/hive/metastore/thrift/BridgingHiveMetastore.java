@@ -15,38 +15,33 @@ package io.trino.plugin.hive.metastore.thrift;
 
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
-import io.trino.hive.thrift.metastore.DataOperationType;
 import io.trino.hive.thrift.metastore.FieldSchema;
-import io.trino.plugin.hive.HiveColumnStatisticType;
-import io.trino.plugin.hive.HivePartition;
-import io.trino.plugin.hive.HiveType;
-import io.trino.plugin.hive.PartitionStatistics;
+import io.trino.metastore.AcidOperation;
+import io.trino.metastore.AcidTransactionOwner;
+import io.trino.metastore.Database;
+import io.trino.metastore.HiveColumnStatistics;
+import io.trino.metastore.HiveMetastore;
+import io.trino.metastore.HivePartition;
+import io.trino.metastore.HivePrincipal;
+import io.trino.metastore.HivePrivilegeInfo;
+import io.trino.metastore.HivePrivilegeInfo.HivePrivilege;
+import io.trino.metastore.HiveType;
+import io.trino.metastore.Partition;
+import io.trino.metastore.PartitionStatistics;
+import io.trino.metastore.PartitionWithStatistics;
+import io.trino.metastore.PrincipalPrivileges;
+import io.trino.metastore.StatisticsUpdateMode;
+import io.trino.metastore.Table;
+import io.trino.metastore.TableInfo;
 import io.trino.plugin.hive.SchemaAlreadyExistsException;
 import io.trino.plugin.hive.TableAlreadyExistsException;
-import io.trino.plugin.hive.acid.AcidOperation;
-import io.trino.plugin.hive.acid.AcidTransaction;
-import io.trino.plugin.hive.metastore.AcidTransactionOwner;
-import io.trino.plugin.hive.metastore.Database;
-import io.trino.plugin.hive.metastore.HiveColumnStatistics;
-import io.trino.plugin.hive.metastore.HiveMetastore;
-import io.trino.plugin.hive.metastore.HivePrincipal;
-import io.trino.plugin.hive.metastore.HivePrivilegeInfo;
-import io.trino.plugin.hive.metastore.HivePrivilegeInfo.HivePrivilege;
-import io.trino.plugin.hive.metastore.Partition;
-import io.trino.plugin.hive.metastore.PartitionWithStatistics;
-import io.trino.plugin.hive.metastore.PrincipalPrivileges;
-import io.trino.plugin.hive.metastore.StatisticsUpdateMode;
-import io.trino.plugin.hive.metastore.Table;
-import io.trino.plugin.hive.util.HiveUtil;
 import io.trino.spi.TrinoException;
-import io.trino.spi.connector.RelationType;
 import io.trino.spi.connector.SchemaNotFoundException;
 import io.trino.spi.connector.SchemaTableName;
 import io.trino.spi.connector.TableNotFoundException;
 import io.trino.spi.function.LanguageFunction;
 import io.trino.spi.predicate.TupleDomain;
 import io.trino.spi.security.RoleGrant;
-import io.trino.spi.type.Type;
 
 import java.util.Collection;
 import java.util.List;
@@ -58,16 +53,18 @@ import java.util.stream.Collectors;
 
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.collect.ImmutableList.toImmutableList;
-import static io.trino.plugin.hive.HiveMetadata.TABLE_COMMENT;
+import static io.trino.metastore.Table.TABLE_COMMENT;
 import static io.trino.plugin.hive.HiveMetadata.TRINO_QUERY_ID_NAME;
 import static io.trino.plugin.hive.metastore.MetastoreUtil.isAvroTableWithSchemaSet;
+import static io.trino.plugin.hive.metastore.MetastoreUtil.metastoreFunctionName;
 import static io.trino.plugin.hive.metastore.MetastoreUtil.verifyCanDropColumn;
 import static io.trino.plugin.hive.metastore.thrift.ThriftMetastoreUtil.csvSchemaFields;
 import static io.trino.plugin.hive.metastore.thrift.ThriftMetastoreUtil.fromMetastoreApiDatabase;
 import static io.trino.plugin.hive.metastore.thrift.ThriftMetastoreUtil.fromMetastoreApiTable;
 import static io.trino.plugin.hive.metastore.thrift.ThriftMetastoreUtil.isAvroTableWithSchemaSet;
+import static io.trino.plugin.hive.metastore.thrift.ThriftMetastoreUtil.isCsvPartition;
 import static io.trino.plugin.hive.metastore.thrift.ThriftMetastoreUtil.isCsvTable;
-import static io.trino.plugin.hive.metastore.thrift.ThriftMetastoreUtil.metastoreFunctionName;
+import static io.trino.plugin.hive.metastore.thrift.ThriftMetastoreUtil.toDataOperationType;
 import static io.trino.plugin.hive.metastore.thrift.ThriftMetastoreUtil.toMetastoreApiDatabase;
 import static io.trino.plugin.hive.metastore.thrift.ThriftMetastoreUtil.toMetastoreApiFunction;
 import static io.trino.plugin.hive.metastore.thrift.ThriftMetastoreUtil.toMetastoreApiTable;
@@ -113,12 +110,6 @@ public class BridgingHiveMetastore
     }
 
     @Override
-    public Set<HiveColumnStatisticType> getSupportedColumnStatistics(Type type)
-    {
-        return delegate.getSupportedColumnStatistics(type);
-    }
-
-    @Override
     public Map<String, HiveColumnStatistics> getTableColumnStatistics(String databaseName, String tableName, Set<String> columnNames)
     {
         checkArgument(!columnNames.isEmpty(), "columnNames is empty");
@@ -139,9 +130,9 @@ public class BridgingHiveMetastore
     }
 
     @Override
-    public void updateTableStatistics(String databaseName, String tableName, AcidTransaction transaction, StatisticsUpdateMode mode, PartitionStatistics statisticsUpdate)
+    public void updateTableStatistics(String databaseName, String tableName, OptionalLong acidWriteId, StatisticsUpdateMode mode, PartitionStatistics statisticsUpdate)
     {
-        delegate.updateTableStatistics(databaseName, tableName, transaction, mode, statisticsUpdate);
+        delegate.updateTableStatistics(databaseName, tableName, acidWriteId, mode, statisticsUpdate);
     }
 
     @Override
@@ -152,53 +143,13 @@ public class BridgingHiveMetastore
     }
 
     @Override
-    public List<String> getTables(String databaseName)
+    public List<TableInfo> getTables(String databaseName)
     {
-        return delegate.getAllTables(databaseName);
-    }
-
-    @Override
-    public Map<String, RelationType> getRelationTypes(String databaseName)
-    {
-        ImmutableMap.Builder<String, RelationType> relationTypes = ImmutableMap.builder();
-        getTables(databaseName).forEach(name -> relationTypes.put(name, RelationType.TABLE));
-        getViews(databaseName).forEach(name -> relationTypes.put(name, RelationType.VIEW));
-        return relationTypes.buildKeepingLast();
-    }
-
-    @Override
-    public List<String> getTablesWithParameter(String databaseName, String parameterKey, String parameterValue)
-    {
-        return delegate.getTablesWithParameter(databaseName, parameterKey, parameterValue);
-    }
-
-    @Override
-    public List<String> getViews(String databaseName)
-    {
-        return delegate.getAllViews(databaseName);
-    }
-
-    @Override
-    public Optional<List<SchemaTableName>> getAllTables()
-    {
-        return delegate.getAllTables();
-    }
-
-    @Override
-    public Optional<Map<SchemaTableName, RelationType>> getAllRelationTypes()
-    {
-        return getAllTables().flatMap(relations -> getAllViews().map(views -> {
-            ImmutableMap.Builder<SchemaTableName, RelationType> relationTypes = ImmutableMap.builder();
-            relations.forEach(name -> relationTypes.put(name, RelationType.TABLE));
-            views.forEach(name -> relationTypes.put(name, RelationType.VIEW));
-            return relationTypes.buildKeepingLast();
-        }));
-    }
-
-    @Override
-    public Optional<List<SchemaTableName>> getAllViews()
-    {
-        return delegate.getAllViews();
+        return delegate.getTables(databaseName).stream()
+                .map(table -> new TableInfo(
+                        new SchemaTableName(table.getDbName(), table.getTableName()),
+                        TableInfo.ExtendedRelationType.fromTableTypeAndComment(table.getTableType(), table.getComments())))
+                .collect(toImmutableList());
     }
 
     @Override
@@ -209,7 +160,7 @@ public class BridgingHiveMetastore
         }
         catch (SchemaAlreadyExistsException e) {
             // Ignore SchemaAlreadyExistsException when this query has already created the database.
-            // This may happen when an actually successful metastore create call is retried,
+            // This may happen when an actually successful metastore create call is retried
             // because of a timeout on our side.
             String expectedQueryId = database.getParameters().get(TRINO_QUERY_ID_NAME);
             if (expectedQueryId != null) {
@@ -267,7 +218,7 @@ public class BridgingHiveMetastore
         }
         catch (TableAlreadyExistsException e) {
             // Ignore TableAlreadyExistsException when this query has already created the table.
-            // This may happen when an actually successful metastore create call is retried,
+            // This may happen when an actually successful metastore create call is retried
             // because of a timeout on our side.
             String expectedQueryId = table.getParameters().get(TRINO_QUERY_ID_NAME);
             if (expectedQueryId != null) {
@@ -430,7 +381,7 @@ public class BridgingHiveMetastore
         }
 
         Map<String, List<String>> partitionNameToPartitionValuesMap = partitionNames.stream()
-                .collect(Collectors.toMap(identity(), HiveUtil::toPartitionValues));
+                .collect(Collectors.toMap(identity(), Partition::toPartitionValues));
         Map<List<String>, Partition> partitionValuesToPartitionMap = delegate.getPartitionsByNames(table.getDatabaseName(), table.getTableName(), partitionNames).stream()
                 .map(partition -> fromMetastoreApiPartition(table, partition))
                 .collect(Collectors.toMap(Partition::getValues, identity()));
@@ -449,6 +400,9 @@ public class BridgingHiveMetastore
                     .map(ThriftMetastoreUtil::toMetastoreApiFieldSchema)
                     .collect(toImmutableList());
             return ThriftMetastoreUtil.fromMetastoreApiPartition(partition, schema);
+        }
+        if (isCsvPartition(partition)) {
+            return ThriftMetastoreUtil.fromMetastoreApiPartition(partition, csvSchemaFields(partition.getSd().getCols()));
         }
 
         return ThriftMetastoreUtil.fromMetastoreApiPartition(partition);
@@ -592,10 +546,10 @@ public class BridgingHiveMetastore
             long transactionId,
             String dbName,
             String tableName,
-            DataOperationType operation,
+            AcidOperation acidOperation,
             boolean isDynamicPartitionWrite)
     {
-        delegate.acquireTableWriteLock(transactionOwner, queryId, transactionId, dbName, tableName, operation, isDynamicPartitionWrite);
+        delegate.acquireTableWriteLock(transactionOwner, queryId, transactionId, dbName, tableName, toDataOperationType(acidOperation), isDynamicPartitionWrite);
     }
 
     @Override
@@ -607,7 +561,7 @@ public class BridgingHiveMetastore
     @Override
     public void addDynamicPartitions(String dbName, String tableName, List<String> partitionNames, long transactionId, long writeId, AcidOperation operation)
     {
-        delegate.addDynamicPartitions(dbName, tableName, partitionNames, transactionId, writeId, operation);
+        delegate.addDynamicPartitions(dbName, tableName, partitionNames, transactionId, writeId, toDataOperationType(operation));
     }
 
     @Override
@@ -619,7 +573,7 @@ public class BridgingHiveMetastore
     @Override
     public boolean functionExists(String databaseName, String functionName, String signatureToken)
     {
-        return delegate.getFunction(databaseName, ThriftMetastoreUtil.metastoreFunctionName(functionName, signatureToken)).isPresent();
+        return delegate.getFunction(databaseName, metastoreFunctionName(functionName, signatureToken)).isPresent();
     }
 
     @Override

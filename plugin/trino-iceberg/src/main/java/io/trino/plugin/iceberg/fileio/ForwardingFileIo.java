@@ -17,6 +17,9 @@ import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Iterables;
 import io.trino.filesystem.Location;
 import io.trino.filesystem.TrinoFileSystem;
+import org.apache.iceberg.DataFile;
+import org.apache.iceberg.DeleteFile;
+import org.apache.iceberg.ManifestFile;
 import org.apache.iceberg.io.BulkDeletionFailureException;
 import org.apache.iceberg.io.InputFile;
 import org.apache.iceberg.io.OutputFile;
@@ -81,11 +84,41 @@ public class ForwardingFileIo
     }
 
     @Override
+    public void deleteFile(InputFile file)
+    {
+        SupportsBulkOperations.super.deleteFile(file);
+    }
+
+    @Override
+    public void deleteFile(OutputFile file)
+    {
+        SupportsBulkOperations.super.deleteFile(file);
+    }
+
+    @Override
     public void deleteFiles(Iterable<String> pathsToDelete)
             throws BulkDeletionFailureException
     {
         Iterable<List<String>> partitions = Iterables.partition(pathsToDelete, DELETE_BATCH_SIZE);
         partitions.forEach(this::deleteBatch);
+    }
+
+    @Override
+    public InputFile newInputFile(ManifestFile manifest)
+    {
+        return SupportsBulkOperations.super.newInputFile(manifest);
+    }
+
+    @Override
+    public InputFile newInputFile(DataFile file)
+    {
+        return SupportsBulkOperations.super.newInputFile(file);
+    }
+
+    @Override
+    public InputFile newInputFile(DeleteFile file)
+    {
+        return SupportsBulkOperations.super.newInputFile(file);
     }
 
     private void deleteBatch(List<String> filesToDelete)
@@ -116,4 +149,7 @@ public class ForwardingFileIo
     {
         throw new UnsupportedOperationException("ForwardingFileIO does not support initialization by properties");
     }
+
+    @Override
+    public void close() {}
 }

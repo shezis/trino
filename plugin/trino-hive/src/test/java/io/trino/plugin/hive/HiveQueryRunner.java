@@ -20,8 +20,8 @@ import io.airlift.log.Logger;
 import io.airlift.log.Logging;
 import io.trino.Session;
 import io.trino.metadata.QualifiedObjectName;
-import io.trino.plugin.hive.metastore.Database;
-import io.trino.plugin.hive.metastore.HiveMetastore;
+import io.trino.metastore.Database;
+import io.trino.metastore.HiveMetastore;
 import io.trino.plugin.hive.metastore.HiveMetastoreFactory;
 import io.trino.plugin.tpcds.TpcdsPlugin;
 import io.trino.plugin.tpch.ColumnNaming;
@@ -47,8 +47,6 @@ import java.util.function.Function;
 import static io.airlift.log.Level.WARN;
 import static io.airlift.units.Duration.nanosSince;
 import static io.trino.plugin.hive.TestingHiveUtils.getConnectorService;
-import static io.trino.plugin.hive.security.HiveSecurityModule.ALLOW_ALL;
-import static io.trino.plugin.hive.security.HiveSecurityModule.SQL_STANDARD;
 import static io.trino.plugin.tpch.ColumnNaming.SIMPLIFIED;
 import static io.trino.plugin.tpch.DecimalTypeMapping.DOUBLE;
 import static io.trino.plugin.tpch.TpchMetadata.TINY_SCHEMA_NAME;
@@ -101,7 +99,7 @@ public final class HiveQueryRunner
         private ImmutableMap.Builder<String, String> hiveProperties = ImmutableMap.builder();
         private List<TpchTable<?>> initialTables = ImmutableList.of();
         private Optional<String> initialSchemasLocationBase = Optional.empty();
-        private Optional<Function<QueryRunner, HiveMetastore>> metastore = Optional.empty();
+        private Optional<Function<DistributedQueryRunner, HiveMetastore>> metastore = Optional.empty();
         private boolean tpcdsCatalogEnabled;
         private boolean tpchBucketedCatalogEnabled;
         private boolean createTpchSchemas = true;
@@ -155,7 +153,7 @@ public final class HiveQueryRunner
         }
 
         @CanIgnoreReturnValue
-        public SELF setMetastore(Function<QueryRunner, HiveMetastore> metastore)
+        public SELF setMetastore(Function<DistributedQueryRunner, HiveMetastore> metastore)
         {
             this.metastore = Optional.of(metastore);
             return self();
@@ -237,7 +235,7 @@ public final class HiveQueryRunner
                 }
                 hiveProperties.put("hive.max-partitions-per-scan", "1000");
                 hiveProperties.put("hive.max-partitions-for-eager-load", "1000");
-                hiveProperties.put("hive.security", SQL_STANDARD);
+                hiveProperties.put("hive.security", "sql-standard");
                 hiveProperties.putAll(this.hiveProperties.buildOrThrow());
 
                 if (tpchBucketedCatalogEnabled) {
@@ -272,8 +270,7 @@ public final class HiveQueryRunner
                     .createMetastore(Optional.empty());
             if (metastore.getDatabase(TPCH_SCHEMA).isEmpty()) {
                 metastore.createDatabase(createDatabaseMetastoreObject(TPCH_SCHEMA, initialSchemasLocationBase));
-                Session session = queryRunner.getDefaultSession();
-                copyTpchTables(queryRunner, "tpch", TINY_SCHEMA_NAME, session, initialTables);
+                copyTpchTables(queryRunner, "tpch", TINY_SCHEMA_NAME, initialTables);
             }
 
             if (tpchBucketedCatalogEnabled && metastore.getDatabase(TPCH_BUCKETED_SCHEMA).isEmpty()) {
@@ -337,18 +334,18 @@ public final class HiveQueryRunner
     {
         long start = System.nanoTime();
         @Language("SQL") String sql;
-        switch (tableName.getObjectName()) {
+        switch (tableName.objectName()) {
             case "part":
             case "partsupp":
             case "supplier":
             case "nation":
             case "region":
-                sql = format("CREATE TABLE %s AS SELECT * FROM %s", tableName.getObjectName(), tableName);
+                sql = format("CREATE TABLE %s AS SELECT * FROM %s", tableName.objectName(), tableName);
                 break;
             case "lineitem":
                 sql = format(
                         "CREATE TABLE %s WITH (bucketed_by=array['%s'], bucket_count=11) AS SELECT * FROM %s",
-                        tableName.getObjectName(),
+                        tableName.objectName(),
                         columnNaming.getName(table.getColumn("orderkey")),
                         tableName);
                 break;
@@ -356,7 +353,7 @@ public final class HiveQueryRunner
             case "orders":
                 sql = format(
                         "CREATE TABLE %s WITH (bucketed_by=array['%s'], bucket_count=11) AS SELECT * FROM %s",
-                        tableName.getObjectName(),
+                        tableName.objectName(),
                         columnNaming.getName(table.getColumn("custkey")),
                         tableName);
                 break;
@@ -383,8 +380,8 @@ public final class HiveQueryRunner
         }
 
         QueryRunner queryRunner = builder()
-                .setExtraProperties(ImmutableMap.of("http-server.http.port", "8080"))
-                .setHiveProperties(ImmutableMap.of("hive.security", ALLOW_ALL))
+                .addCoordinatorProperty("http-server.http.port", "8080")
+                .setHiveProperties(ImmutableMap.of("hive.security", "allow-all"))
                 .setSkipTimezoneSetup(true)
                 .setInitialTables(TpchTable.getTables())
                 .setBaseDataDir(baseDataDir)
@@ -394,7 +391,6 @@ public final class HiveQueryRunner
                 //.setTpchColumnNaming(ColumnNaming.STANDARD)
                 //.setTpchDecimalTypeMapping(DecimalTypeMapping.DECIMAL)
                 .build();
-        Thread.sleep(10);
         log.info("======== SERVER STARTED ========");
         log.info("\n====\n%s\n====", queryRunner.getCoordinator().getBaseUrl());
     }

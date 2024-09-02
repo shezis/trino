@@ -35,7 +35,6 @@ import io.airlift.stats.TimeStat;
 import io.airlift.units.Duration;
 import io.trino.plugin.opensearch.AwsSecurityConfig;
 import io.trino.plugin.opensearch.OpenSearchConfig;
-import io.trino.plugin.opensearch.OpenSearchErrorCode;
 import io.trino.plugin.opensearch.PasswordConfig;
 import io.trino.spi.TrinoException;
 import jakarta.annotation.PostConstruct;
@@ -93,6 +92,11 @@ import static com.google.common.collect.ImmutableMap.toImmutableMap;
 import static io.airlift.concurrent.Threads.daemonThreadsNamed;
 import static io.airlift.json.JsonCodec.jsonCodec;
 import static io.trino.plugin.base.ssl.SslUtils.createSSLContext;
+import static io.trino.plugin.opensearch.OpenSearchErrorCode.OPENSEARCH_CONNECTION_ERROR;
+import static io.trino.plugin.opensearch.OpenSearchErrorCode.OPENSEARCH_INVALID_METADATA;
+import static io.trino.plugin.opensearch.OpenSearchErrorCode.OPENSEARCH_INVALID_RESPONSE;
+import static io.trino.plugin.opensearch.OpenSearchErrorCode.OPENSEARCH_QUERY_FAILURE;
+import static io.trino.plugin.opensearch.OpenSearchErrorCode.OPENSEARCH_SSL_INITIALIZATION_FAILURE;
 import static java.lang.StrictMath.toIntExact;
 import static java.lang.String.format;
 import static java.nio.charset.StandardCharsets.UTF_8;
@@ -169,7 +173,7 @@ public class OpenSearchClient
             Set<OpenSearchNode> nodes = fetchNodes();
 
             HttpHost[] hosts = nodes.stream()
-                    .map(OpenSearchNode::getAddress)
+                    .map(OpenSearchNode::address)
                     .filter(Optional::isPresent)
                     .map(Optional::get)
                     .map(address -> HttpHost.create(format("%s://%s", tlsEnabled ? "https" : "http", address)))
@@ -199,7 +203,7 @@ public class OpenSearchClient
                         .map(httpHost -> new HttpHost(httpHost, config.getPort(), config.isTlsEnabled() ? "https" : "http"))
                         .toArray(HttpHost[]::new));
 
-        builder.setHttpClientConfigCallback(ignored -> {
+        builder.setHttpClientConfigCallback(_ -> {
             RequestConfig requestConfig = RequestConfig.custom()
                     .setConnectTimeout(toIntExact(config.getConnectTimeout().toMillis()))
                     .setSocketTimeout(toIntExact(config.getRequestTimeout().toMillis()))
@@ -233,6 +237,7 @@ public class OpenSearchClient
 
             awsSecurityConfig.ifPresent(securityConfig -> clientBuilder.addInterceptorLast(new AwsRequestSigner(
                     securityConfig.getRegion(),
+                    securityConfig.getDeploymentType(),
                     getAwsCredentialsProvider(securityConfig))));
 
             return clientBuilder;
@@ -278,7 +283,7 @@ public class OpenSearchClient
             return Optional.of(createSSLContext(keyStorePath, keyStorePassword, trustStorePath, trustStorePassword));
         }
         catch (GeneralSecurityException | IOException e) {
-            throw new TrinoException(OpenSearchErrorCode.OPENSEARCH_SSL_INITIALIZATION_FAILURE, e);
+            throw new TrinoException(OPENSEARCH_SSL_INITIALIZATION_FAILURE, e);
         }
     }
 
@@ -310,7 +315,7 @@ public class OpenSearchClient
     public List<Shard> getSearchShards(String index)
     {
         Map<String, OpenSearchNode> nodeById = getNodes().stream()
-                .collect(toImmutableMap(OpenSearchNode::getId, Function.identity()));
+                .collect(toImmutableMap(OpenSearchNode::id, Function.identity()));
 
         SearchShardsResponse shardsResponse = doRequest(format("/%s/_search_shards", index), SEARCH_SHARDS_RESPONSE_CODEC::fromJson);
 
@@ -336,7 +341,7 @@ public class OpenSearchClient
                 node = nodeById.get(chosen.getNode());
             }
 
-            shards.add(new Shard(chosen.getIndex(), chosen.getShard(), node.getAddress()));
+            shards.add(new Shard(chosen.getIndex(), chosen.getShard(), node.address()));
         }
 
         return shards.build();
@@ -366,10 +371,10 @@ public class OpenSearchClient
             if (e.getResponse().getStatusLine().getStatusCode() == 404) {
                 return false;
             }
-            throw new TrinoException(OpenSearchErrorCode.OPENSEARCH_CONNECTION_ERROR, e);
+            throw new TrinoException(OPENSEARCH_CONNECTION_ERROR, e);
         }
         catch (IOException e) {
-            throw new TrinoException(OpenSearchErrorCode.OPENSEARCH_CONNECTION_ERROR, e);
+            throw new TrinoException(OPENSEARCH_CONNECTION_ERROR, e);
         }
     }
 
@@ -385,9 +390,20 @@ public class OpenSearchClient
                     int docsCount = root.get(i).get("docs.count").asInt();
                     int deletedDocsCount = root.get(i).get("docs.deleted").asInt();
                     if (docsCount == 0 && deletedDocsCount == 0) {
-                        // without documents, the index won't have any dynamic mappings, but maybe there are some explicit ones
-                        if (getIndexMetadata(index).getSchema().getFields().isEmpty()) {
-                            continue;
+                        try {
+                            // without documents, the index won't have any dynamic mappings, but maybe there are some explicit ones
+                            if (getIndexMetadata(index).schema().fields().isEmpty()) {
+                                continue;
+                            }
+                        }
+                        catch (TrinoException e) {
+                            if (e.getErrorCode().equals(OPENSEARCH_INVALID_METADATA.toErrorCode())) {
+                                continue;
+                            }
+                            if (e.getCause() instanceof ResponseException cause && cause.getResponse().getStatusLine().getStatusCode() == 404) {
+                                continue;
+                            }
+                            throw e;
                         }
                     }
                     result.add(index);
@@ -395,7 +411,7 @@ public class OpenSearchClient
                 return result.build();
             }
             catch (IOException e) {
-                throw new TrinoException(OpenSearchErrorCode.OPENSEARCH_INVALID_RESPONSE, e);
+                throw new TrinoException(OPENSEARCH_INVALID_RESPONSE, e);
             }
         });
     }
@@ -419,7 +435,7 @@ public class OpenSearchClient
                 return result.buildOrThrow();
             }
             catch (IOException e) {
-                throw new TrinoException(OpenSearchErrorCode.OPENSEARCH_INVALID_RESPONSE, e);
+                throw new TrinoException(OPENSEARCH_INVALID_RESPONSE, e);
             }
         });
     }
@@ -460,7 +476,7 @@ public class OpenSearchClient
                 return new IndexMetadata(parseType(mappings.get("properties"), metaProperties));
             }
             catch (IOException e) {
-                throw new TrinoException(OpenSearchErrorCode.OPENSEARCH_INVALID_RESPONSE, e);
+                throw new TrinoException(OPENSEARCH_INVALID_RESPONSE, e);
             }
         });
     }
@@ -489,7 +505,7 @@ public class OpenSearchClient
             // this route, as it will likely lead to confusion in dealing with array syntax in Trino and potentially nested array and other
             // syntax when parsing the raw json.
             if (isArray && asRawJson) {
-                throw new TrinoException(OpenSearchErrorCode.OPENSEARCH_INVALID_METADATA,
+                throw new TrinoException(OPENSEARCH_INVALID_METADATA,
                         format("A column, (%s) cannot be declared as a Trino array and also be rendered as json.", name));
             }
 
@@ -546,7 +562,7 @@ public class OpenSearchClient
                             new BasicHeader("Accept-Encoding", "application/json"));
         }
         catch (IOException e) {
-            throw new TrinoException(OpenSearchErrorCode.OPENSEARCH_CONNECTION_ERROR, e);
+            throw new TrinoException(OPENSEARCH_CONNECTION_ERROR, e);
         }
 
         String body;
@@ -554,7 +570,7 @@ public class OpenSearchClient
             body = EntityUtils.toString(response.getEntity());
         }
         catch (IOException e) {
-            throw new TrinoException(OpenSearchErrorCode.OPENSEARCH_INVALID_RESPONSE, e);
+            throw new TrinoException(OPENSEARCH_INVALID_RESPONSE, e);
         }
 
         return body;
@@ -598,7 +614,7 @@ public class OpenSearchClient
             return client.search(request);
         }
         catch (IOException e) {
-            throw new TrinoException(OpenSearchErrorCode.OPENSEARCH_CONNECTION_ERROR, e);
+            throw new TrinoException(OPENSEARCH_CONNECTION_ERROR, e);
         }
         catch (OpenSearchStatusException e) {
             Throwable[] suppressed = e.getSuppressed();
@@ -609,7 +625,7 @@ public class OpenSearchClient
                 }
             }
 
-            throw new TrinoException(OpenSearchErrorCode.OPENSEARCH_CONNECTION_ERROR, e);
+            throw new TrinoException(OPENSEARCH_CONNECTION_ERROR, e);
         }
         finally {
             searchStats.add(Duration.nanosSince(start));
@@ -628,7 +644,7 @@ public class OpenSearchClient
             return client.searchScroll(request);
         }
         catch (IOException e) {
-            throw new TrinoException(OpenSearchErrorCode.OPENSEARCH_CONNECTION_ERROR, e);
+            throw new TrinoException(OPENSEARCH_CONNECTION_ERROR, e);
         }
         finally {
             nextPageStats.add(Duration.nanosSince(start));
@@ -658,7 +674,7 @@ public class OpenSearchClient
                 throw propagate(e);
             }
             catch (IOException e) {
-                throw new TrinoException(OpenSearchErrorCode.OPENSEARCH_CONNECTION_ERROR, e);
+                throw new TrinoException(OPENSEARCH_CONNECTION_ERROR, e);
             }
 
             try {
@@ -666,7 +682,7 @@ public class OpenSearchClient
                         .getCount();
             }
             catch (IOException e) {
-                throw new TrinoException(OpenSearchErrorCode.OPENSEARCH_INVALID_RESPONSE, e);
+                throw new TrinoException(OPENSEARCH_INVALID_RESPONSE, e);
             }
         }
         finally {
@@ -682,7 +698,7 @@ public class OpenSearchClient
             client.clearScroll(request);
         }
         catch (IOException e) {
-            throw new TrinoException(OpenSearchErrorCode.OPENSEARCH_CONNECTION_ERROR, e);
+            throw new TrinoException(OPENSEARCH_CONNECTION_ERROR, e);
         }
     }
 
@@ -724,7 +740,7 @@ public class OpenSearchClient
                     .performRequest("GET", path);
         }
         catch (IOException e) {
-            throw new TrinoException(OpenSearchErrorCode.OPENSEARCH_CONNECTION_ERROR, e);
+            throw new TrinoException(OPENSEARCH_CONNECTION_ERROR, e);
         }
 
         String body;
@@ -732,7 +748,7 @@ public class OpenSearchClient
             body = EntityUtils.toString(response.getEntity());
         }
         catch (IOException e) {
-            throw new TrinoException(OpenSearchErrorCode.OPENSEARCH_INVALID_RESPONSE, e);
+            throw new TrinoException(OPENSEARCH_INVALID_RESPONSE, e);
         }
 
         return handler.process(body);
@@ -750,17 +766,17 @@ public class OpenSearchClient
                         .path("reason");
 
                 if (!reason.isMissingNode()) {
-                    throw new TrinoException(OpenSearchErrorCode.OPENSEARCH_QUERY_FAILURE, reason.asText(), exception);
+                    throw new TrinoException(OPENSEARCH_QUERY_FAILURE, reason.asText(), exception);
                 }
             }
             catch (IOException e) {
-                TrinoException result = new TrinoException(OpenSearchErrorCode.OPENSEARCH_QUERY_FAILURE, exception);
+                TrinoException result = new TrinoException(OPENSEARCH_QUERY_FAILURE, exception);
                 result.addSuppressed(e);
                 throw result;
             }
         }
 
-        throw new TrinoException(OpenSearchErrorCode.OPENSEARCH_QUERY_FAILURE, exception);
+        throw new TrinoException(OPENSEARCH_QUERY_FAILURE, exception);
     }
 
     @VisibleForTesting

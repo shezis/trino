@@ -15,6 +15,9 @@ package io.trino.sql.planner.iterative.rule;
 
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
+import io.trino.sql.ir.Coalesce;
+import io.trino.sql.ir.Comparison;
+import io.trino.sql.ir.Reference;
 import io.trino.sql.planner.assertions.PlanMatchPattern;
 import io.trino.sql.planner.iterative.rule.test.BaseRuleTest;
 import io.trino.sql.planner.plan.ApplyNode;
@@ -22,7 +25,11 @@ import io.trino.sql.planner.plan.Assignments;
 import io.trino.sql.planner.plan.FilterNode;
 import org.junit.jupiter.api.Test;
 
+import static io.trino.spi.type.BigintType.BIGINT;
 import static io.trino.spi.type.BooleanType.BOOLEAN;
+import static io.trino.sql.ir.Booleans.FALSE;
+import static io.trino.sql.ir.Booleans.TRUE;
+import static io.trino.sql.ir.Comparison.Operator.EQUAL;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.aggregation;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.aggregationFunction;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.correlatedJoin;
@@ -30,7 +37,6 @@ import static io.trino.sql.planner.assertions.PlanMatchPattern.limit;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.node;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.project;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.values;
-import static io.trino.sql.planner.iterative.rule.test.PlanBuilder.expression;
 
 public class TestTransformExistsApplyToCorrelatedJoin
         extends BaseRuleTest
@@ -62,11 +68,11 @@ public class TestTransformExistsApplyToCorrelatedJoin
                                 p.values()))
                 .matches(correlatedJoin(
                         ImmutableList.of(),
-                        values(ImmutableMap.of()),
+                        values(),
                         project(
-                                ImmutableMap.of("b", PlanMatchPattern.expression("(\"count_expr\" > CAST(0 AS bigint))")),
-                                aggregation(ImmutableMap.of("count_expr", aggregationFunction("count", ImmutableList.of())),
-                                        values()))));
+                                ImmutableMap.of("b", PlanMatchPattern.expression(new Coalesce(new Reference(BOOLEAN, "aggrbool"), FALSE))),
+                                aggregation(ImmutableMap.of("aggrbool", aggregationFunction("bool_or", ImmutableList.of("subquery"))),
+                                        project(ImmutableMap.of("subquery", PlanMatchPattern.expression(TRUE)), values())))));
     }
 
     @Test
@@ -80,15 +86,15 @@ public class TestTransformExistsApplyToCorrelatedJoin
                                 p.values(p.symbol("corr")),
                                 p.project(Assignments.of(),
                                         p.filter(
-                                                expression("corr = column"),
+                                                new Comparison(EQUAL, new Reference(BIGINT, "corr"), new Reference(BIGINT, "column")),
                                                 p.values(p.symbol("column"))))))
                 .matches(
-                        project(ImmutableMap.of("b", PlanMatchPattern.expression("COALESCE(subquerytrue, false)")),
+                        project(ImmutableMap.of("b", PlanMatchPattern.expression(new Coalesce(new Reference(BOOLEAN, "subquery"), FALSE))),
                                 correlatedJoin(
                                         ImmutableList.of("corr"),
                                         values("corr"),
                                         project(
-                                                ImmutableMap.of("subquerytrue", PlanMatchPattern.expression("true")),
+                                                ImmutableMap.of("subquery", PlanMatchPattern.expression(TRUE)),
                                                 limit(1,
                                                         project(ImmutableMap.of(),
                                                                 node(FilterNode.class,

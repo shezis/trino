@@ -17,7 +17,6 @@ package io.trino.execution;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.inject.Key;
-import com.google.inject.TypeLiteral;
 import io.trino.Session;
 import io.trino.connector.MockConnectorFactory;
 import io.trino.connector.MockConnectorPlugin;
@@ -38,6 +37,7 @@ import io.trino.spi.session.PropertyMetadata;
 import io.trino.sql.tree.AllColumns;
 import io.trino.sql.tree.CreateMaterializedView;
 import io.trino.sql.tree.Identifier;
+import io.trino.sql.tree.NodeLocation;
 import io.trino.sql.tree.Property;
 import io.trino.sql.tree.QualifiedName;
 import io.trino.sql.tree.Statement;
@@ -98,14 +98,14 @@ class TestCreateMaterializedViewTask
                 .build());
         metadata = new MockMetadata();
         queryRunner.installPlugin(new MockConnectorPlugin(MockConnectorFactory.builder()
-                .withMetadataWrapper(ignored -> metadata)
+                .withMetadataWrapper(_ -> metadata)
                 .withGetMaterializedViewProperties(() -> ImmutableList.<PropertyMetadata<?>>builder()
                         .add(stringProperty("foo", "test materialized view property", DEFAULT_MATERIALIZED_VIEW_FOO_PROPERTY_VALUE, false))
                         .add(integerProperty("bar", "test materialized view property", DEFAULT_MATERIALIZED_VIEW_BAR_PROPERTY_VALUE, false))
                         .build())
                 .build()));
         queryRunner.createCatalog(TEST_CATALOG_NAME, "mock", ImmutableMap.of());
-        Map<Class<? extends Statement>, DataDefinitionTask<?>> tasks = queryRunner.getCoordinator().getInstance(Key.get(new TypeLiteral<Map<Class<? extends Statement>, DataDefinitionTask<?>>>() {}));
+        Map<Class<? extends Statement>, DataDefinitionTask<?>> tasks = queryRunner.getCoordinator().getInstance(new Key<>() {});
         task = (CreateMaterializedViewTask) tasks.get(CreateMaterializedView.class);
         this.queryRunner = queryRunner;
     }
@@ -170,13 +170,13 @@ class TestCreateMaterializedViewTask
                 false,
                 true,
                 Optional.empty(),
-                ImmutableList.of(new Property(new Identifier("baz"), new StringLiteral("abc"))),
+                ImmutableList.of(new Property(new NodeLocation(1, 88), new Identifier("baz"), new StringLiteral("abc"))),
                 Optional.empty());
 
         queryRunner.inTransaction(transactionSession -> {
             assertTrinoExceptionThrownBy(() -> createMaterializedView(transactionSession, statement))
                     .hasErrorCode(INVALID_MATERIALIZED_VIEW_PROPERTY)
-                    .hasMessage("Catalog 'test_catalog' materialized view property 'baz' does not exist");
+                    .hasMessage("line 1:88: Catalog 'test_catalog' materialized view property 'baz' does not exist");
             assertThat(metadata.getCreateMaterializedViewCallCount()).isEqualTo(0);
             return null;
         });

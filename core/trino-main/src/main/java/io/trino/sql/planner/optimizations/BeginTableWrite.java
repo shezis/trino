@@ -80,7 +80,7 @@ public class BeginTableWrite
         catch (RuntimeException e) {
             try {
                 int nestLevel = 4; // so that it renders reasonably within exception stacktrace
-                String explain = textLogicalPlan(plan, context.types(), metadata, functionManager, StatsAndCosts.empty(), context.session(), nestLevel, false);
+                String explain = textLogicalPlan(plan, metadata, functionManager, StatsAndCosts.empty(), context.session(), nestLevel, false);
                 e.addSuppressed(new Exception("Current plan:\n" + explain));
             }
             catch (RuntimeException ignore) {
@@ -211,7 +211,8 @@ public class BeginTableWrite
                         tableHandle.get(),
                         mergeTarget.getMergeHandle(),
                         mergeTarget.getSchemaTableName(),
-                        mergeTarget.getMergeParadigmAndTypes());
+                        mergeTarget.getMergeParadigmAndTypes(),
+                        findSourceTableHandles(node));
             }
 
             if (node instanceof ExchangeNode || node instanceof UnionNode) {
@@ -248,15 +249,16 @@ public class BeginTableWrite
             if (target instanceof MergeTarget merge) {
                 MergeHandle mergeHandle = metadata.beginMerge(session, merge.getHandle());
                 return new MergeTarget(
-                        mergeHandle.getTableHandle(),
+                        mergeHandle.tableHandle(),
                         Optional.of(mergeHandle),
                         merge.getSchemaTableName(),
-                        merge.getMergeParadigmAndTypes());
+                        merge.getMergeParadigmAndTypes(),
+                        findSourceTableHandles(planNode));
             }
             if (target instanceof TableWriterNode.RefreshMaterializedViewReference refreshMV) {
                 return new TableWriterNode.RefreshMaterializedViewTarget(
                         refreshMV.getStorageTableHandle(),
-                        metadata.beginRefreshMaterializedView(session, refreshMV.getStorageTableHandle(), refreshMV.getSourceTableHandles()),
+                        metadata.beginRefreshMaterializedView(session, refreshMV.getStorageTableHandle(), refreshMV.getSourceTableHandles(), refreshMV.getRefreshType()),
                         metadata.getTableName(session, refreshMV.getStorageTableHandle()).getSchemaTableName(),
                         refreshMV.getSourceTableHandles(),
                         refreshMV.getSourceTableFunctions(),

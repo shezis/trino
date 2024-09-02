@@ -37,7 +37,6 @@ import java.util.List;
 
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static io.trino.SystemSessionProperties.ENABLE_LARGE_DYNAMIC_FILTERS;
-import static io.trino.plugin.memory.MemoryQueryRunner.createMemoryQueryRunner;
 import static io.trino.sql.planner.OptimizerConfig.JoinDistributionType;
 import static io.trino.sql.planner.OptimizerConfig.JoinDistributionType.BROADCAST;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -56,9 +55,9 @@ public class TestMemoryConnectorTest
     protected QueryRunner createQueryRunner()
             throws Exception
     {
-        return createMemoryQueryRunner(
-                // Adjust DF limits to test edge cases
-                ImmutableMap.<String, String>builder()
+        return MemoryQueryRunner.builder()
+                .addExtraProperties(ImmutableMap.<String, String>builder()
+                        // Adjust DF limits to test edge cases
                         .put("dynamic-filtering.small.max-distinct-values-per-driver", "100")
                         .put("dynamic-filtering.small.range-row-limit-per-driver", "100")
                         .put("dynamic-filtering.large.max-distinct-values-per-driver", "100")
@@ -69,32 +68,38 @@ public class TestMemoryConnectorTest
                         .put("dynamic-filtering.large-partitioned.range-row-limit-per-driver", "100000")
                         // disable semi join to inner join rewrite to test semi join operators explicitly
                         .put("optimizer.rewrite-filtering-semi-join-to-inner-join", "false")
-                        .buildOrThrow(),
-                ImmutableSet.<TpchTable<?>>builder()
-                        .addAll(REQUIRED_TPCH_TABLES)
-                        .add(TpchTable.PART)
-                        .add(TpchTable.LINE_ITEM)
-                        .build());
+                        // enable CREATE FUNCTION
+                        .put("sql.path", "memory.functions")
+                        .put("sql.default-function-catalog", "memory")
+                        .put("sql.default-function-schema", "functions")
+                        .buildOrThrow())
+                .setInitialTables(
+                        ImmutableSet.<TpchTable<?>>builder()
+                                .addAll(REQUIRED_TPCH_TABLES)
+                                .add(TpchTable.PART)
+                                .add(TpchTable.LINE_ITEM)
+                                .build())
+                .build();
     }
 
     @Override
     protected boolean hasBehavior(TestingConnectorBehavior connectorBehavior)
     {
         return switch (connectorBehavior) {
-            case SUPPORTS_ADD_COLUMN,
-                    SUPPORTS_AGGREGATION_PUSHDOWN,
-                    SUPPORTS_CREATE_MATERIALIZED_VIEW,
-                    SUPPORTS_DELETE,
-                    SUPPORTS_DEREFERENCE_PUSHDOWN,
-                    SUPPORTS_LIMIT_PUSHDOWN,
-                    SUPPORTS_MERGE,
-                    SUPPORTS_NOT_NULL_CONSTRAINT,
-                    SUPPORTS_PREDICATE_PUSHDOWN,
-                    SUPPORTS_RENAME_COLUMN,
-                    SUPPORTS_RENAME_SCHEMA,
-                    SUPPORTS_SET_COLUMN_TYPE,
-                    SUPPORTS_TOPN_PUSHDOWN,
-                    SUPPORTS_UPDATE -> false;
+            case SUPPORTS_TRUNCATE -> true;
+            case SUPPORTS_ADD_FIELD,
+                 SUPPORTS_AGGREGATION_PUSHDOWN,
+                 SUPPORTS_CREATE_MATERIALIZED_VIEW,
+                 SUPPORTS_DELETE,
+                 SUPPORTS_DEREFERENCE_PUSHDOWN,
+                 SUPPORTS_DROP_COLUMN,
+                 SUPPORTS_LIMIT_PUSHDOWN,
+                 SUPPORTS_MERGE,
+                 SUPPORTS_PREDICATE_PUSHDOWN,
+                 SUPPORTS_RENAME_FIELD,
+                 SUPPORTS_SET_COLUMN_TYPE,
+                 SUPPORTS_TOPN_PUSHDOWN,
+                 SUPPORTS_UPDATE -> false;
             case SUPPORTS_CREATE_FUNCTION -> true;
             default -> super.hasBehavior(connectorBehavior);
         };
@@ -276,15 +281,14 @@ public class TestMemoryConnectorTest
     public void testJoinDynamicFilteringBlockProbeSide()
     {
         for (JoinDistributionType joinDistributionType : JoinDistributionType.values()) {
-            // Wait for both build sides to finish before starting the scan of 'lineitem' table (should be very selective given the dynamic filters).
+            // Wait for both build side to finish before starting the scan of 'lineitem' table (should be very selective given the dynamic filters).
             assertDynamicFiltering(
                     "SELECT l.comment" +
-                            " FROM  lineitem l, part p, orders o" +
-                            " WHERE l.orderkey = o.orderkey AND o.comment = 'nstructions sleep furiously among '" +
-                            " AND p.partkey = l.partkey AND p.comment = 'onic deposits'",
+                            " FROM  lineitem l, orders o" +
+                            " WHERE l.orderkey = o.orderkey AND o.comment = 'nstructions sleep furiously among '",
                     noJoinReordering(joinDistributionType),
-                    1,
-                    1, PART_COUNT, ORDERS_COUNT);
+                    6,
+                    6, ORDERS_COUNT);
         }
     }
 
@@ -540,12 +544,15 @@ public class TestMemoryConnectorTest
 
         assertThat(query("SHOW SCHEMAS"))
                 .skippingTypesCheck()
-                .matches("VALUES 'default', 'information_schema', 'schema1', 'schema2'");
+                .containsAll("VALUES 'default', 'information_schema', 'schema1', 'schema2'");
         assertUpdate("CREATE TABLE schema1.nation AS SELECT * FROM tpch.tiny.nation WHERE nationkey % 2 = 0", "SELECT count(*) FROM nation WHERE MOD(nationkey, 2) = 0");
         assertUpdate("CREATE TABLE schema2.nation AS SELECT * FROM tpch.tiny.nation WHERE nationkey % 2 = 1", "SELECT count(*) FROM nation WHERE MOD(nationkey, 2) = 1");
 
         assertThat(computeScalar("SELECT count(*) FROM schema1.nation")).isEqualTo(13L);
         assertThat(computeScalar("SELECT count(*) FROM schema2.nation")).isEqualTo(12L);
+
+        assertUpdate("DROP SCHEMA schema2 CASCADE");
+        assertUpdate("DROP SCHEMA schema1 CASCADE");
     }
 
     @Test
@@ -594,5 +601,30 @@ public class TestMemoryConnectorTest
 
         assertUpdate("DROP VIEW test_different_schema.test_view_renamed");
         assertUpdate("DROP SCHEMA test_different_schema");
+    }
+
+    @Test
+    void testInsertAfterTruncate()
+    {
+        try (TestTable table = new TestTable(getQueryRunner()::execute, "test_truncate", "AS SELECT 1 x")) {
+            assertUpdate("TRUNCATE TABLE " + table.getName());
+            assertQueryReturnsEmptyResult("SELECT * FROM " + table.getName());
+
+            assertUpdate("INSERT INTO " + table.getName() + " VALUES 2", 1);
+            assertThat(query("SELECT * FROM " + table.getName()))
+                    .matches("VALUES 2");
+        }
+    }
+
+    @Override
+    protected String errorMessageForInsertIntoNotNullColumn(String columnName)
+    {
+        return "NULL value not allowed for NOT NULL column: " + columnName;
+    }
+
+    @Override
+    protected void verifyAddNotNullColumnToNonEmptyTableFailurePermissible(Throwable e)
+    {
+        assertThat(e).hasMessageMatching("Unable to add NOT NULL column '.*' for non-empty table: .*");
     }
 }

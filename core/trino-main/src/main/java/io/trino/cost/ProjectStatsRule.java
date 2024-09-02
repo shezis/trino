@@ -15,9 +15,9 @@ package io.trino.cost;
 
 import io.trino.cost.StatsCalculator.Context;
 import io.trino.matching.Pattern;
+import io.trino.sql.ir.Expression;
 import io.trino.sql.planner.Symbol;
 import io.trino.sql.planner.plan.ProjectNode;
-import io.trino.sql.tree.Expression;
 
 import java.util.Map;
 import java.util.Optional;
@@ -52,7 +52,7 @@ public class ProjectStatsRule
                 .setOutputRowCount(sourceStats.getOutputRowCount());
 
         for (Map.Entry<Symbol, Expression> entry : node.getAssignments().entrySet()) {
-            calculatedStats.addSymbolStatistics(entry.getKey(), scalarStatsCalculator.calculate(entry.getValue(), sourceStats, context.session(), context.types()));
+            calculatedStats.addSymbolStatistics(entry.getKey(), scalarStatsCalculator.calculate(entry.getValue(), sourceStats, context.session()));
         }
         return Optional.of(calculatedStats.build());
     }

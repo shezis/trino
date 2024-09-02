@@ -19,6 +19,7 @@ import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Maps;
 import io.trino.hive.thrift.metastore.ColumnStatisticsData;
 import io.trino.hive.thrift.metastore.ColumnStatisticsObj;
+import io.trino.hive.thrift.metastore.DataOperationType;
 import io.trino.hive.thrift.metastore.Database;
 import io.trino.hive.thrift.metastore.EnvironmentContext;
 import io.trino.hive.thrift.metastore.FieldSchema;
@@ -37,7 +38,7 @@ import io.trino.hive.thrift.metastore.RolePrincipalGrant;
 import io.trino.hive.thrift.metastore.SerDeInfo;
 import io.trino.hive.thrift.metastore.StorageDescriptor;
 import io.trino.hive.thrift.metastore.Table;
-import io.trino.plugin.hive.acid.AcidOperation;
+import io.trino.hive.thrift.metastore.TableMeta;
 import io.trino.spi.connector.SchemaTableName;
 import io.trino.testng.services.ManageTestResources;
 import org.apache.hadoop.hive.metastore.Warehouse;
@@ -48,7 +49,6 @@ import java.util.Collection;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static com.google.common.collect.ImmutableList.toImmutableList;
@@ -152,46 +152,16 @@ public class MockThriftMetastoreClient
     }
 
     @Override
-    public List<String> getAllTables(String dbName)
+    public List<TableMeta> getTableMeta(String databaseName)
     {
         accessCount.incrementAndGet();
         if (throwException) {
             throw new RuntimeException();
         }
-        if (!dbName.equals(TEST_DATABASE)) {
+        if (!databaseName.equals(TEST_DATABASE)) {
             return ImmutableList.of(); // As specified by Hive specification
         }
-        return ImmutableList.of(TEST_TABLE);
-    }
-
-    @Override
-    public Optional<List<SchemaTableName>> getAllTables()
-            throws TException
-    {
-        accessCount.incrementAndGet();
-        if (throwException) {
-            throw new RuntimeException();
-        }
-        return Optional.of(ImmutableList.of(new SchemaTableName(TEST_DATABASE, TEST_TABLE)));
-    }
-
-    @Override
-    public List<String> getAllViews(String databaseName)
-    {
-        throw new UnsupportedOperationException();
-    }
-
-    @Override
-    public Optional<List<SchemaTableName>> getAllViews()
-            throws TException
-    {
-        throw new UnsupportedOperationException();
-    }
-
-    @Override
-    public List<String> getTablesWithParameter(String databaseName, String parameterKey, String parameterValue)
-    {
-        throw new UnsupportedOperationException();
+        return ImmutableList.of(new TableMeta(TEST_DATABASE, TEST_TABLE, MANAGED_TABLE.name()));
     }
 
     @Override
@@ -580,7 +550,7 @@ public class MockThriftMetastoreClient
     }
 
     @Override
-    public void addDynamicPartitions(String dbName, String tableName, List<String> partitionNames, long transactionId, long writeId, AcidOperation operation)
+    public void addDynamicPartitions(String dbName, String tableName, List<String> partitionNames, long transactionId, long writeId, DataOperationType operation)
     {
         throw new UnsupportedOperationException();
     }

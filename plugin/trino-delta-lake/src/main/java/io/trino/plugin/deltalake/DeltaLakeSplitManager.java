@@ -14,6 +14,7 @@
 package io.trino.plugin.deltalake;
 
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableSet;
 import com.google.inject.Inject;
 import io.airlift.units.DataSize;
 import io.trino.filesystem.Location;
@@ -44,7 +45,6 @@ import io.trino.spi.predicate.TupleDomain;
 import io.trino.spi.type.TypeManager;
 
 import java.net.URI;
-import java.net.URLDecoder;
 import java.time.Instant;
 import java.util.HashMap;
 import java.util.List;
@@ -52,7 +52,6 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ExecutorService;
-import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Stream;
 
 import static com.google.common.base.Preconditions.checkArgument;
@@ -64,13 +63,11 @@ import static io.trino.plugin.deltalake.DeltaLakeAnalyzeProperties.AnalyzeMode.F
 import static io.trino.plugin.deltalake.DeltaLakeColumnHandle.pathColumnHandle;
 import static io.trino.plugin.deltalake.DeltaLakeMetadata.createStatisticsPredicate;
 import static io.trino.plugin.deltalake.DeltaLakeSessionProperties.getDynamicFilteringWaitTimeout;
-import static io.trino.plugin.deltalake.DeltaLakeSessionProperties.getMaxInitialSplitSize;
 import static io.trino.plugin.deltalake.DeltaLakeSessionProperties.getMaxSplitSize;
 import static io.trino.plugin.deltalake.transactionlog.DeltaLakeSchemaSupport.extractSchema;
 import static io.trino.plugin.deltalake.transactionlog.TransactionLogParser.deserializePartitionValue;
 import static io.trino.spi.connector.FixedSplitSource.emptySplitSource;
 import static java.lang.Math.clamp;
-import static java.nio.charset.StandardCharsets.UTF_8;
 import static java.util.Objects.requireNonNull;
 import static java.util.function.Function.identity;
 
@@ -80,7 +77,6 @@ public class DeltaLakeSplitManager
     private final TypeManager typeManager;
     private final TransactionLogAccess transactionLogAccess;
     private final ExecutorService executor;
-    private final int maxInitialSplits;
     private final int maxSplitsPerSecond;
     private final int maxOutstandingSplits;
     private final double minimumAssignedSplitWeight;
@@ -101,7 +97,6 @@ public class DeltaLakeSplitManager
         this.typeManager = requireNonNull(typeManager, "typeManager is null");
         this.transactionLogAccess = requireNonNull(transactionLogAccess, "transactionLogAccess is null");
         this.executor = requireNonNull(executor, "executor is null");
-        this.maxInitialSplits = config.getMaxInitialSplits();
         this.maxSplitsPerSecond = config.getMaxSplitsPerSecond();
         this.maxOutstandingSplits = config.getMaxOutstandingSplits();
         this.minimumAssignedSplitWeight = config.getMinimumAssignedSplitWeight();
@@ -157,26 +152,25 @@ public class DeltaLakeSplitManager
             Constraint constraint)
     {
         TableSnapshot tableSnapshot = deltaLakeTransactionManager.get(transaction, session.getIdentity())
-                .getSnapshot(session, tableHandle.getSchemaTableName(), tableHandle.getLocation(), tableHandle.getReadVersion());
+                .getSnapshot(session, tableHandle.getSchemaTableName(), tableHandle.getLocation(), Optional.of(tableHandle.getReadVersion()));
         Stream<AddFileEntry> validDataFiles = transactionLogAccess.getActiveFiles(
+                session,
                 tableSnapshot,
                 tableHandle.getMetadataEntry(),
                 tableHandle.getProtocolEntry(),
                 tableHandle.getEnforcedPartitionConstraint(),
-                tableHandle.getProjectedColumns(),
-                session);
+                tableHandle.getProjectedColumns().orElse(ImmutableSet.of()));
         TupleDomain<DeltaLakeColumnHandle> enforcedPartitionConstraint = tableHandle.getEnforcedPartitionConstraint();
         TupleDomain<DeltaLakeColumnHandle> nonPartitionConstraint = tableHandle.getNonPartitionConstraint();
         Domain pathDomain = getPathDomain(nonPartitionConstraint);
 
         boolean splittable =
                 // Delta Lake handles updates and deletes by copying entire data files, minus updates/deletes. Because of this we can only have one Split/UpdatablePageSource
-                // per file. TODO (https://github.com/trinodb/trino/issues/17063) use deletion vectors instead of copy-on-write and remove DeltaLakeTableHandle.writeType
+                // per file. TODO The connector already supports deletion vectors. Update this condition.
                 tableHandle.getWriteType().isEmpty() &&
                         // When only partitioning columns projected, there is no point splitting the files
                         mayAnyDataColumnProjected(tableHandle);
-        AtomicInteger remainingInitialSplits = new AtomicInteger(maxInitialSplits);
-        Optional<Instant> filesModifiedAfter = tableHandle.getAnalyzeHandle().flatMap(AnalyzeHandle::getFilesModifiedAfter);
+        Optional<Instant> filesModifiedAfter = tableHandle.getAnalyzeHandle().flatMap(AnalyzeHandle::filesModifiedAfter);
         Optional<Long> maxScannedFileSizeInBytes = maxScannedFileSize.map(DataSize::toBytes);
 
         MetadataEntry metadataEntry = tableHandle.getMetadataEntry();
@@ -190,16 +184,16 @@ public class DeltaLakeSplitManager
                         nonPartitionConstraint.getDomains().orElseThrow().keySet().stream(),
                         columnsCoveredByDynamicFilter.stream()
                                 .map(DeltaLakeColumnHandle.class::cast))
-                .map(DeltaLakeColumnHandle::getBaseColumnName)
+                .map(DeltaLakeColumnHandle::baseColumnName)
                 .collect(toImmutableSet());
         List<DeltaLakeColumnMetadata> schema = extractSchema(metadataEntry, tableHandle.getProtocolEntry(), typeManager);
         List<DeltaLakeColumnMetadata> predicatedColumns = schema.stream()
-                .filter(column -> predicatedColumnNames.contains(column.getName()))
+                .filter(column -> predicatedColumnNames.contains(column.name()))
                 .collect(toImmutableList());
         return validDataFiles
                 .flatMap(addAction -> {
                     if (tableHandle.getAnalyzeHandle().isPresent() &&
-                            !(tableHandle.getAnalyzeHandle().get().getAnalyzeMode() == FULL_REFRESH) && !addAction.isDataChange()) {
+                            !(tableHandle.getAnalyzeHandle().get().analyzeMode() == FULL_REFRESH) && !addAction.isDataChange()) {
                         // skip files which do not introduce data change on non FULL REFRESH
                         return Stream.empty();
                     }
@@ -234,10 +228,10 @@ public class DeltaLakeSplitManager
                         Map<String, Optional<String>> partitionValues = addAction.getCanonicalPartitionValues();
                         Map<ColumnHandle, NullableValue> deserializedValues = constraint.getPredicateColumns().orElseThrow().stream()
                                 .map(DeltaLakeColumnHandle.class::cast)
-                                .filter(column -> column.isBaseColumn() && partitionValues.containsKey(column.getBaseColumnName()))
+                                .filter(column -> column.isBaseColumn() && partitionValues.containsKey(column.baseColumnName()))
                                 .collect(toImmutableMap(identity(), column -> new NullableValue(
-                                        column.getBaseType(),
-                                        deserializePartitionValue(column, partitionValues.get(column.getBaseColumnName())))));
+                                        column.baseType(),
+                                        deserializePartitionValue(column, partitionValues.get(column.baseColumnName())))));
                         if (!constraint.predicate().get().test(deserializedValues)) {
                             return Stream.empty();
                         }
@@ -249,8 +243,7 @@ public class DeltaLakeSplitManager
                             splitPath,
                             addAction.getCanonicalPartitionValues(),
                             statisticsPredicate,
-                            splittable,
-                            remainingInitialSplits)
+                            splittable)
                             .stream();
                 });
     }
@@ -284,7 +277,7 @@ public class DeltaLakeSplitManager
             return true;
         }
         return tableHandle.getProjectedColumns().get().stream()
-                .map(DeltaLakeColumnHandle::getColumnType)
+                .map(DeltaLakeColumnHandle::columnType)
                 .anyMatch(DeltaLakeColumnType.REGULAR::equals);
     }
 
@@ -293,7 +286,7 @@ public class DeltaLakeSplitManager
         for (Map.Entry<DeltaLakeColumnHandle, Domain> enforcedDomainsEntry : domains.entrySet()) {
             DeltaLakeColumnHandle partitionColumn = enforcedDomainsEntry.getKey();
             Domain partitionDomain = enforcedDomainsEntry.getValue();
-            if (!partitionDomain.includesNullableValue(deserializePartitionValue(partitionColumn, partitionKeys.get(partitionColumn.getBasePhysicalColumnName())))) {
+            if (!partitionDomain.includesNullableValue(deserializePartitionValue(partitionColumn, partitionKeys.get(partitionColumn.basePhysicalColumnName())))) {
                 return false;
             }
         }
@@ -304,7 +297,7 @@ public class DeltaLakeSplitManager
     {
         return effectivePredicate.getDomains()
                 .flatMap(domains -> Optional.ofNullable(domains.get(pathColumnHandle())))
-                .orElseGet(() -> Domain.all(pathColumnHandle().getBaseType()));
+                .orElseGet(() -> Domain.all(pathColumnHandle().baseType()));
     }
 
     private static boolean pathMatchesPredicate(Domain pathDomain, String path)
@@ -318,8 +311,7 @@ public class DeltaLakeSplitManager
             String splitPath,
             Map<String, Optional<String>> partitionKeys,
             TupleDomain<DeltaLakeColumnHandle> statisticsPredicate,
-            boolean splittable,
-            AtomicInteger remainingInitialSplits)
+            boolean splittable)
     {
         long fileSize = addFileEntry.getSize();
 
@@ -342,13 +334,7 @@ public class DeltaLakeSplitManager
         ImmutableList.Builder<DeltaLakeSplit> splits = ImmutableList.builder();
         long currentOffset = 0;
         while (currentOffset < fileSize) {
-            long maxSplitSize;
-            if (remainingInitialSplits.get() > 0 && remainingInitialSplits.getAndDecrement() > 0) {
-                maxSplitSize = getMaxInitialSplitSize(session).toBytes();
-            }
-            else {
-                maxSplitSize = getMaxSplitSize(session).toBytes();
-            }
+            long maxSplitSize = getMaxSplitSize(session).toBytes();
             long splitSize = Math.min(maxSplitSize, fileSize - currentOffset);
 
             splits.add(new DeltaLakeSplit(
@@ -372,18 +358,13 @@ public class DeltaLakeSplitManager
 
     public static Location buildSplitPath(Location tableLocation, AddFileEntry addAction)
     {
-        // paths are relative to the table location and are RFC 2396 URIs
+        // paths are relative to the table location or absolute in case of shallow cloned table and are RFC 2396 URIs
         // https://github.com/delta-io/delta/blob/master/PROTOCOL.md#add-file-and-remove-file
         URI uri = URI.create(addAction.getPath());
-        String path = uri.getPath();
 
-        // org.apache.hadoop.fs.azurebfs.AzureBlobFileSystem encodes the path as URL when opening files
-        // https://issues.apache.org/jira/browse/HADOOP-18580
-        Optional<String> scheme = tableLocation.scheme();
-        if (scheme.isPresent() && (scheme.get().equals("abfs") || scheme.get().equals("abfss"))) {
-            // Replace '+' with '%2B' beforehand. Otherwise, the character becomes a space ' ' by URL decode.
-            path = URLDecoder.decode(path.replace("+", "%2B"), UTF_8);
+        if (uri.isAbsolute()) {
+            return Location.of(uri.getScheme() + ":" + uri.getSchemeSpecificPart());
         }
-        return tableLocation.appendPath(path);
+        return tableLocation.appendPath(uri.getPath());
     }
 }

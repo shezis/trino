@@ -13,9 +13,11 @@
  */
 package io.trino.spi.security;
 
+import io.trino.spi.QueryId;
 import io.trino.spi.connector.CatalogSchemaName;
 import io.trino.spi.connector.CatalogSchemaRoutineName;
 import io.trino.spi.connector.CatalogSchemaTableName;
+import io.trino.spi.connector.ColumnSchema;
 import io.trino.spi.connector.EntityKindAndName;
 import io.trino.spi.connector.EntityPrivilege;
 import io.trino.spi.connector.SchemaTableName;
@@ -86,6 +88,7 @@ import static io.trino.spi.security.AccessDeniedException.denySetTableProperties
 import static io.trino.spi.security.AccessDeniedException.denySetUser;
 import static io.trino.spi.security.AccessDeniedException.denySetViewAuthorization;
 import static io.trino.spi.security.AccessDeniedException.denyShowColumns;
+import static io.trino.spi.security.AccessDeniedException.denyShowCreateFunction;
 import static io.trino.spi.security.AccessDeniedException.denyShowCreateSchema;
 import static io.trino.spi.security.AccessDeniedException.denyShowCreateTable;
 import static io.trino.spi.security.AccessDeniedException.denyShowCurrentRoles;
@@ -128,10 +131,22 @@ public interface SystemAccessControl
      * Checks if identity can execute a query.
      *
      * @throws AccessDeniedException if not allowed
+     * @deprecated use {@link #checkCanExecuteQuery(Identity, QueryId)}
      */
+    @Deprecated
     default void checkCanExecuteQuery(Identity identity)
     {
         denyExecuteQuery();
+    }
+
+    /**
+     * Checks if identity can execute a query.
+     *
+     * @throws AccessDeniedException if not allowed
+     */
+    default void checkCanExecuteQuery(Identity identity, QueryId queryId)
+    {
+        checkCanExecuteQuery(identity);
     }
 
     /**
@@ -192,10 +207,22 @@ public interface SystemAccessControl
      * Check if identity is allowed to set the specified system property.
      *
      * @throws AccessDeniedException if not allowed
+     * @deprecated use {@link #checkCanSetSystemSessionProperty(Identity, QueryId, String)}
      */
+    @Deprecated
     default void checkCanSetSystemSessionProperty(Identity identity, String propertyName)
     {
         denySetSystemSessionProperty(propertyName);
+    }
+
+    /**
+     * Check if identity is allowed to set the specified system property.
+     *
+     * @throws AccessDeniedException if not allowed
+     */
+    default void checkCanSetSystemSessionProperty(Identity identity, QueryId queryId, String propertyName)
+    {
+        checkCanSetSystemSessionProperty(identity, propertyName);
     }
 
     /**
@@ -893,6 +920,16 @@ public interface SystemAccessControl
     }
 
     /**
+     * Check if identity is allowed to execute SHOW CREATE FUNCTION.
+     *
+     * @throws AccessDeniedException if not allowed
+     */
+    default void checkCanShowCreateFunction(SystemSecurityContext systemSecurityContext, CatalogSchemaRoutineName functionName)
+    {
+        denyShowCreateFunction(functionName.toString());
+    }
+
+    /**
      * Get row filters associated with the given table and identity.
      * <p>
      * Each filter must be a scalar SQL expression of boolean type over the columns in the table.
@@ -911,10 +948,28 @@ public interface SystemAccessControl
      * must be written in terms of columns in the table.
      *
      * @return the mask if present, or empty if not applicable
+     * @deprecated use {@link #getColumnMasks(SystemSecurityContext, CatalogSchemaTableName, List)}
      */
+    @Deprecated
     default Optional<ViewExpression> getColumnMask(SystemSecurityContext context, CatalogSchemaTableName tableName, String columnName, Type type)
     {
         return Optional.empty();
+    }
+
+    /**
+     * Bulk method for getting column masks for a subset of columns in a table.
+     * <p>
+     * Each mask must be a scalar SQL expression of a type coercible to the type of the column being masked. The expression
+     * must be written in terms of columns in the table.
+     *
+     * @return a mapping from columns to masks. The keys of the return Map are a subset of {@code columns}.
+     */
+    default Map<ColumnSchema, ViewExpression> getColumnMasks(SystemSecurityContext context, CatalogSchemaTableName tableName, List<ColumnSchema> columns)
+    {
+        return columns.stream()
+                .map(column -> Map.entry(column, getColumnMask(context, tableName, column.getName(), column.getType())))
+                .filter(entry -> entry.getValue().isPresent())
+                .collect(Collectors.toMap(Map.Entry::getKey, entry -> entry.getValue().get()));
     }
 
     /**
@@ -924,4 +979,6 @@ public interface SystemAccessControl
     {
         return emptySet();
     }
+
+    default void shutdown() {}
 }

@@ -24,6 +24,8 @@ import io.trino.metadata.TestingFunctionResolution;
 import io.trino.spi.connector.ColumnHandle;
 import io.trino.spi.predicate.TupleDomain;
 import io.trino.spi.type.VarcharType;
+import io.trino.sql.ir.Cast;
+import io.trino.sql.ir.Expression;
 import io.trino.sql.planner.plan.AggregationNode.Aggregation;
 import io.trino.sql.planner.plan.Assignments;
 import io.trino.sql.planner.plan.DataOrganizationSpecification;
@@ -34,8 +36,6 @@ import io.trino.sql.planner.plan.TableScanNode;
 import io.trino.sql.planner.plan.UnionNode;
 import io.trino.sql.planner.plan.WindowNode;
 import io.trino.sql.planner.sanity.TypeValidator;
-import io.trino.sql.tree.Cast;
-import io.trino.sql.tree.Expression;
 import io.trino.testing.TestingMetadata.TestingColumnHandle;
 import org.junit.jupiter.api.Test;
 
@@ -49,7 +49,6 @@ import static io.trino.spi.type.DateType.DATE;
 import static io.trino.spi.type.DoubleType.DOUBLE;
 import static io.trino.spi.type.IntegerType.INTEGER;
 import static io.trino.sql.analyzer.TypeSignatureProvider.fromTypes;
-import static io.trino.sql.analyzer.TypeSignatureTranslator.toSqlType;
 import static io.trino.sql.planner.TestingPlannerContext.PLANNER_CONTEXT;
 import static io.trino.sql.planner.plan.AggregationNode.singleAggregation;
 import static io.trino.sql.planner.plan.AggregationNode.singleGroupingSet;
@@ -97,11 +96,11 @@ public class TestTypeValidator
     @Test
     public void testValidProject()
     {
-        Expression expression1 = new Cast(columnB.toSymbolReference(), toSqlType(BIGINT));
-        Expression expression2 = new Cast(columnC.toSymbolReference(), toSqlType(BIGINT));
+        Expression expression1 = new Cast(columnB.toSymbolReference(), BIGINT);
+        Expression expression2 = new Cast(columnC.toSymbolReference(), BIGINT);
         Assignments assignments = Assignments.builder()
-                .put(symbolAllocator.newSymbol(expression1, BIGINT), expression1)
-                .put(symbolAllocator.newSymbol(expression2, BIGINT), expression2)
+                .put(symbolAllocator.newSymbol(expression1), expression1)
+                .put(symbolAllocator.newSymbol(expression2), expression2)
                 .build();
         PlanNode node = new ProjectNode(
                 newId(),
@@ -142,8 +141,6 @@ public class TestTypeValidator
                 Optional.empty(),
                 UNBOUNDED_FOLLOWING,
                 Optional.empty(),
-                Optional.empty(),
-                Optional.empty(),
                 Optional.empty());
 
         WindowNode.Function function = new WindowNode.Function(resolvedFunction, ImmutableList.of(columnC.toSymbolReference()), frame, false);
@@ -180,25 +177,6 @@ public class TestTypeValidator
                 singleGroupingSet(ImmutableList.of(columnA, columnB)));
 
         assertTypesValid(node);
-    }
-
-    @Test
-    public void testInvalidProject()
-    {
-        Expression expression1 = new Cast(columnB.toSymbolReference(), toSqlType(INTEGER));
-        Expression expression2 = new Cast(columnA.toSymbolReference(), toSqlType(INTEGER));
-        Assignments assignments = Assignments.builder()
-                .put(symbolAllocator.newSymbol(expression1, BIGINT), expression1) // should be INTEGER
-                .put(symbolAllocator.newSymbol(expression1, INTEGER), expression2)
-                .build();
-        PlanNode node = new ProjectNode(
-                newId(),
-                baseTableScan,
-                assignments);
-
-        assertThatThrownBy(() -> assertTypesValid(node))
-                .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageMatching("type of symbol 'expr(_[0-9]+)?' is expected to be bigint, but the actual type is integer");
     }
 
     @Test
@@ -258,8 +236,6 @@ public class TestTypeValidator
                 Optional.empty(),
                 UNBOUNDED_FOLLOWING,
                 Optional.empty(),
-                Optional.empty(),
-                Optional.empty(),
                 Optional.empty());
 
         WindowNode.Function function = new WindowNode.Function(resolvedFunction, ImmutableList.of(columnA.toSymbolReference()), frame, false);
@@ -292,8 +268,6 @@ public class TestTypeValidator
                 Optional.empty(),
                 Optional.empty(),
                 UNBOUNDED_FOLLOWING,
-                Optional.empty(),
-                Optional.empty(),
                 Optional.empty(),
                 Optional.empty());
 
@@ -337,7 +311,7 @@ public class TestTypeValidator
 
     private void assertTypesValid(PlanNode node)
     {
-        TYPE_VALIDATOR.validate(node, TEST_SESSION, PLANNER_CONTEXT, new IrTypeAnalyzer(PLANNER_CONTEXT), symbolAllocator.getTypes(), WarningCollector.NOOP);
+        TYPE_VALIDATOR.validate(node, TEST_SESSION, PLANNER_CONTEXT, WarningCollector.NOOP);
     }
 
     private static PlanNodeId newId()

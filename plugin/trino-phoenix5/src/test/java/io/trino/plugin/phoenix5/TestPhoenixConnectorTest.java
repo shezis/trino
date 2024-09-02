@@ -25,9 +25,7 @@ import io.trino.testing.TestingConnectorBehavior;
 import io.trino.testing.sql.SqlExecutor;
 import io.trino.testing.sql.TestTable;
 import org.intellij.lang.annotations.Language;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.parallel.Isolated;
 
 import java.sql.Connection;
 import java.sql.DriverManager;
@@ -44,7 +42,6 @@ import static com.google.common.collect.ImmutableList.toImmutableList;
 import static io.trino.plugin.jdbc.JdbcMetadataSessionProperties.DOMAIN_COMPACTION_THRESHOLD;
 import static io.trino.plugin.jdbc.TypeHandlingJdbcSessionProperties.UNSUPPORTED_TYPE_HANDLING;
 import static io.trino.plugin.jdbc.UnsupportedTypeHandling.CONVERT_TO_VARCHAR;
-import static io.trino.plugin.phoenix5.PhoenixQueryRunner.createPhoenixQueryRunner;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.exchange;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.limit;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.output;
@@ -67,7 +64,6 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.junit.jupiter.api.Assumptions.abort;
 
-@Isolated
 public class TestPhoenixConnectorTest
         extends BaseJdbcConnectorTest
 {
@@ -78,7 +74,9 @@ public class TestPhoenixConnectorTest
             throws Exception
     {
         testingPhoenixServer = closeAfterClass(TestingPhoenixServer.getInstance()).get();
-        return createPhoenixQueryRunner(testingPhoenixServer, ImmutableMap.of(), REQUIRED_TPCH_TABLES);
+        return PhoenixQueryRunner.builder(testingPhoenixServer)
+                .setInitialTables(REQUIRED_TPCH_TABLES)
+                .build();
     }
 
     @Override
@@ -86,25 +84,26 @@ public class TestPhoenixConnectorTest
     {
         return switch (connectorBehavior) {
             case SUPPORTS_MERGE,
-                    SUPPORTS_PREDICATE_ARITHMETIC_EXPRESSION_PUSHDOWN,
-                    SUPPORTS_ROW_LEVEL_UPDATE,
-                    SUPPORTS_UPDATE -> true;
+                 SUPPORTS_PREDICATE_ARITHMETIC_EXPRESSION_PUSHDOWN,
+                 SUPPORTS_ROW_LEVEL_UPDATE,
+                 SUPPORTS_UPDATE -> true;
             case SUPPORTS_ADD_COLUMN_WITH_COMMENT,
-                    SUPPORTS_AGGREGATION_PUSHDOWN,
-                    SUPPORTS_COMMENT_ON_COLUMN,
-                    SUPPORTS_COMMENT_ON_TABLE,
-                    SUPPORTS_CREATE_TABLE_WITH_COLUMN_COMMENT,
-                    SUPPORTS_CREATE_TABLE_WITH_TABLE_COMMENT,
-                    SUPPORTS_DROP_SCHEMA_CASCADE,
-                    SUPPORTS_LIMIT_PUSHDOWN,
-                    SUPPORTS_NATIVE_QUERY,
-                    SUPPORTS_NOT_NULL_CONSTRAINT,
-                    SUPPORTS_RENAME_SCHEMA,
-                    SUPPORTS_RENAME_TABLE,
-                    SUPPORTS_ROW_TYPE,
-                    SUPPORTS_SET_COLUMN_TYPE,
-                    SUPPORTS_TOPN_PUSHDOWN,
-                    SUPPORTS_TRUNCATE -> false;
+                 SUPPORTS_AGGREGATION_PUSHDOWN,
+                 SUPPORTS_COMMENT_ON_COLUMN,
+                 SUPPORTS_COMMENT_ON_TABLE,
+                 SUPPORTS_CREATE_TABLE_WITH_COLUMN_COMMENT,
+                 SUPPORTS_CREATE_TABLE_WITH_TABLE_COMMENT,
+                 SUPPORTS_DROP_SCHEMA_CASCADE,
+                 SUPPORTS_LIMIT_PUSHDOWN,
+                 SUPPORTS_NATIVE_QUERY,
+                 SUPPORTS_NOT_NULL_CONSTRAINT,
+                 SUPPORTS_RENAME_COLUMN,
+                 SUPPORTS_RENAME_SCHEMA,
+                 SUPPORTS_RENAME_TABLE,
+                 SUPPORTS_ROW_TYPE,
+                 SUPPORTS_SET_COLUMN_TYPE,
+                 SUPPORTS_TOPN_PUSHDOWN,
+                 SUPPORTS_TRUNCATE -> false;
             default -> super.hasBehavior(connectorBehavior);
         };
     }
@@ -219,33 +218,6 @@ public class TestPhoenixConnectorTest
 
     @Test
     @Override
-    public void testRenameColumn()
-    {
-        assertThatThrownBy(super::testRenameColumn)
-                // TODO (https://github.com/trinodb/trino/issues/7205) support column rename in Phoenix
-                .hasMessageContaining("Syntax error. Encountered \"RENAME\"");
-        abort("Rename column is not yet supported by Phoenix connector");
-    }
-
-    @Test
-    @Override
-    public void testAlterTableRenameColumnToLongName()
-    {
-        assertThatThrownBy(super::testAlterTableRenameColumnToLongName)
-                // TODO (https://github.com/trinodb/trino/issues/7205) support column rename in Phoenix
-                .hasMessageContaining("Syntax error. Encountered \"RENAME\"");
-        abort("Rename column is not yet supported by Phoenix connector");
-    }
-
-    @Test
-    @Disabled
-    @Override
-    public void testRenameColumnName()
-    {
-    }
-
-    @Test
-    @Override
     public void testAddAndDropColumnName()
     {
         for (String columnName : testColumnNameDataProvider()) {
@@ -253,12 +225,12 @@ public class TestPhoenixConnectorTest
             if (columnName.equals("an'apostrophe")) {
                 assertThatThrownBy(() -> testAddAndDropColumnName(columnName, requiresDelimiting(columnName)))
                         .hasMessageContaining("Syntax error. Mismatched input");
-                abort("TODO");
+                continue;
             }
             if (columnName.equals("a\\backslash`")) {
                 assertThatThrownBy(() -> testAddAndDropColumnName(columnName, requiresDelimiting(columnName)))
                         .hasMessageContaining("Undefined column");
-                abort("TODO");
+                continue;
             }
 
             testAddAndDropColumnName(columnName, requiresDelimiting(columnName));
@@ -834,6 +806,29 @@ public class TestPhoenixConnectorTest
         assertQuery(
                 "SHOW SESSION LIKE '" + propertyName + "'",
                 "VALUES('" + propertyName + "','5000', '5000', 'integer', 'Maximum ranges to allow in a tuple domain without simplifying it')");
+    }
+
+    @Test
+    @Override // Override because Phoenix doesn't follow SQL standard syntax
+    public void testExecuteProcedure()
+    {
+        String tableName = "test_execute" + randomNameSuffix();
+        String schemaTableName = getSession().getSchema().orElseThrow() + "." + tableName;
+
+        assertUpdate("CREATE TABLE " + schemaTableName + "(a int) WITH (rowkeys = 'a')");
+        try {
+            assertUpdate("CALL system.execute('UPSERT INTO " + schemaTableName + " VALUES (1)')");
+            assertQuery("SELECT * FROM " + schemaTableName, "VALUES 1");
+
+            assertUpdate("CALL system.execute('DELETE FROM " + schemaTableName + "')");
+            assertQueryReturnsEmptyResult("SELECT * FROM " + schemaTableName);
+
+            assertUpdate("CALL system.execute('DROP TABLE " + schemaTableName + "')");
+            assertThat(getQueryRunner().tableExists(getSession(), tableName)).isFalse();
+        }
+        finally {
+            assertUpdate("DROP TABLE IF EXISTS " + schemaTableName);
+        }
     }
 
     @Override

@@ -14,11 +14,13 @@
 package io.trino.execution;
 
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
 import com.google.common.util.concurrent.ListenableFuture;
 import io.trino.execution.warnings.WarningCollector;
 import io.trino.metadata.QualifiedObjectName;
 import io.trino.security.AllowAllAccessControl;
 import io.trino.sql.tree.DropMaterializedView;
+import io.trino.sql.tree.NodeLocation;
 import io.trino.sql.tree.QualifiedName;
 import org.junit.jupiter.api.Test;
 
@@ -50,7 +52,7 @@ public class TestDropMaterializedViewTask
 
         assertTrinoExceptionThrownBy(() -> getFutureValue(executeDropMaterializedView(viewName, false)))
                 .hasErrorCode(GENERIC_USER_ERROR)
-                .hasMessage("Materialized view '%s' does not exist", viewName);
+                .hasMessageContaining("Materialized view '%s' does not exist", viewName);
     }
 
     @Test
@@ -70,7 +72,7 @@ public class TestDropMaterializedViewTask
 
         assertTrinoExceptionThrownBy(() -> getFutureValue(executeDropMaterializedView(asQualifiedName(tableName), true)))
                 .hasErrorCode(GENERIC_USER_ERROR)
-                .hasMessage("Materialized view '%s' does not exist, but a table with that name exists. Did you mean DROP TABLE %s?", tableName, tableName);
+                .hasMessageContaining("Materialized view '%s' does not exist, but a table with that name exists. Did you mean DROP TABLE %s?", tableName, tableName);
     }
 
     @Test
@@ -81,34 +83,34 @@ public class TestDropMaterializedViewTask
 
         assertTrinoExceptionThrownBy(() -> getFutureValue(executeDropMaterializedView(asQualifiedName(tableName), true)))
                 .hasErrorCode(GENERIC_USER_ERROR)
-                .hasMessage("Materialized view '%s' does not exist, but a table with that name exists. Did you mean DROP TABLE %s?", tableName, tableName);
+                .hasMessageContaining("Materialized view '%s' does not exist, but a table with that name exists. Did you mean DROP TABLE %s?", tableName, tableName);
     }
 
     @Test
     public void testDropMaterializedViewOnView()
     {
         QualifiedName viewName = qualifiedName("existing_view");
-        metadata.createView(testSession, asQualifiedObjectName(viewName), someView(), false);
+        metadata.createView(testSession, asQualifiedObjectName(viewName), someView(), ImmutableMap.of(), false);
 
         assertTrinoExceptionThrownBy(() -> getFutureValue(executeDropMaterializedView(viewName, false)))
                 .hasErrorCode(GENERIC_USER_ERROR)
-                .hasMessage("Materialized view '%s' does not exist, but a view with that name exists. Did you mean DROP VIEW %s?", viewName, viewName);
+                .hasMessageContaining("Materialized view '%s' does not exist, but a view with that name exists. Did you mean DROP VIEW %s?", viewName, viewName);
     }
 
     @Test
     public void testDropMaterializedViewOnViewIfExists()
     {
         QualifiedName viewName = qualifiedName("existing_view");
-        metadata.createView(testSession, asQualifiedObjectName(viewName), someView(), false);
+        metadata.createView(testSession, asQualifiedObjectName(viewName), someView(), ImmutableMap.of(), false);
 
         assertTrinoExceptionThrownBy(() -> getFutureValue(executeDropMaterializedView(viewName, false)))
                 .hasErrorCode(GENERIC_USER_ERROR)
-                .hasMessage("Materialized view '%s' does not exist, but a view with that name exists. Did you mean DROP VIEW %s?", viewName, viewName);
+                .hasMessageContaining("Materialized view '%s' does not exist, but a view with that name exists. Did you mean DROP VIEW %s?", viewName, viewName);
     }
 
     private ListenableFuture<Void> executeDropMaterializedView(QualifiedName viewName, boolean exists)
     {
         return new DropMaterializedViewTask(metadata, new AllowAllAccessControl())
-                .execute(new DropMaterializedView(viewName, exists), queryStateMachine, ImmutableList.of(), WarningCollector.NOOP);
+                .execute(new DropMaterializedView(new NodeLocation(1, 1), viewName, exists), queryStateMachine, ImmutableList.of(), WarningCollector.NOOP);
     }
 }

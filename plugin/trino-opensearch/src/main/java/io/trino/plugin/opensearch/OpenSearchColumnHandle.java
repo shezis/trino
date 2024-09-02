@@ -13,86 +13,42 @@
  */
 package io.trino.plugin.opensearch;
 
-import com.fasterxml.jackson.annotation.JsonCreator;
-import com.fasterxml.jackson.annotation.JsonProperty;
+import com.fasterxml.jackson.annotation.JsonIgnore;
+import com.google.common.base.Joiner;
+import com.google.common.collect.ImmutableList;
+import io.trino.plugin.opensearch.client.IndexMetadata;
 import io.trino.spi.connector.ColumnHandle;
 import io.trino.spi.type.Type;
 
-import java.util.Objects;
+import java.util.List;
 
 import static java.util.Objects.requireNonNull;
 
-public final class OpenSearchColumnHandle
+public record OpenSearchColumnHandle(
+        List<String> path,
+        Type type,
+        IndexMetadata.Type opensearchType,
+        DecoderDescriptor decoderDescriptor,
+        boolean supportsPredicates)
         implements ColumnHandle
 {
-    private final String name;
-    private final Type type;
-    private final DecoderDescriptor decoderDescriptor;
-    private final boolean supportsPredicates;
-
-    @JsonCreator
-    public OpenSearchColumnHandle(
-            @JsonProperty("name") String name,
-            @JsonProperty("type") Type type,
-            @JsonProperty("decoderDescriptor") DecoderDescriptor decoderDescriptor,
-            @JsonProperty("supportsPredicates") boolean supportsPredicates)
+    public OpenSearchColumnHandle
     {
-        this.name = requireNonNull(name, "name is null");
-        this.type = requireNonNull(type, "type is null");
-        this.decoderDescriptor = requireNonNull(decoderDescriptor, "decoderDescriptor is null");
-        this.supportsPredicates = supportsPredicates;
+        path = ImmutableList.copyOf(path);
+        requireNonNull(type, "type is null");
+        requireNonNull(opensearchType, "opensearchType is null");
+        requireNonNull(decoderDescriptor, "decoderDescriptor is null");
     }
 
-    @JsonProperty
-    public String getName()
+    @JsonIgnore
+    public String name()
     {
-        return name;
-    }
-
-    @JsonProperty
-    public Type getType()
-    {
-        return type;
-    }
-
-    @JsonProperty
-    public DecoderDescriptor getDecoderDescriptor()
-    {
-        return decoderDescriptor;
-    }
-
-    @JsonProperty
-    public boolean isSupportsPredicates()
-    {
-        return supportsPredicates;
-    }
-
-    @Override
-    public int hashCode()
-    {
-        return Objects.hash(name, type, decoderDescriptor, supportsPredicates);
-    }
-
-    @Override
-    public boolean equals(Object obj)
-    {
-        if (this == obj) {
-            return true;
-        }
-        if ((obj == null) || (getClass() != obj.getClass())) {
-            return false;
-        }
-
-        OpenSearchColumnHandle other = (OpenSearchColumnHandle) obj;
-        return this.supportsPredicates == other.supportsPredicates &&
-                Objects.equals(this.getName(), other.getName()) &&
-                Objects.equals(this.getType(), other.getType()) &&
-                Objects.equals(this.getDecoderDescriptor(), other.getDecoderDescriptor());
+        return Joiner.on('.').join(path);
     }
 
     @Override
     public String toString()
     {
-        return getName() + "::" + getType();
+        return name() + "::" + type();
     }
 }
