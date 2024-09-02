@@ -47,6 +47,7 @@ public class TestSheetsConfig
                 .setCredentialsFilePath(null)
                 .setCredentialsKey(null)
                 .setMetadataSheetId(null)
+                .setBatchClear(false)
                 .setSheetsDataMaxCacheSize(1000)
                 .setSheetsDataExpireAfterWrite(new Duration(5, TimeUnit.MINUTES))
                 .setConnectionTimeout(new Duration(20, TimeUnit.SECONDS))

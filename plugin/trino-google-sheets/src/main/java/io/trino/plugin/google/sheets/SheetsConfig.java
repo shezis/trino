@@ -39,6 +39,8 @@ public class SheetsConfig
     private Duration readTimeout = new Duration(20, TimeUnit.SECONDS);
     private Duration writeTimeout = new Duration(20, TimeUnit.SECONDS);
 
+    private Boolean batchClear = false;
+
     @AssertTrue(message = "Exactly one of 'gsheets.credentials-key' or 'gsheets.credentials-path' must be specified")
     public boolean isCredentialsConfigurationValid()
     {
@@ -79,6 +81,12 @@ public class SheetsConfig
     public Optional<String> getMetadataSheetId()
     {
         return metadataSheetId;
+    }
+
+    @NotNull
+    public Boolean getBatchClear()
+    {
+        return batchClear;
     }
 
     @Config("gsheets.metadata-sheet-id")
@@ -145,6 +153,14 @@ public class SheetsConfig
     public SheetsConfig setReadTimeout(Duration readTimeout)
     {
         this.readTimeout = readTimeout;
+        return this;
+    }
+
+    @Config("gsheets.batch-clear")
+    @ConfigDescription("Clear Sheet before Inserting new data")
+    public SheetsConfig setBatchClear(boolean batchClear)
+    {
+        this.batchClear = batchClear;
         return this;
     }
 
